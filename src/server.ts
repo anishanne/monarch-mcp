@@ -3,6 +3,7 @@ import { z } from "zod";
 import { searchSpec, getEnabledSpec } from "./spec/api-spec.js";
 import { TYPE_DEFINITIONS } from "./spec/types.js";
 import { executeCode } from "./executor.js";
+import { log } from "./logger.js";
 import type { MonarchAPI } from "./sdk/index.js";
 
 function buildApiCategoryListing(): string {
@@ -35,7 +36,21 @@ export function createServer(api: MonarchAPI): McpServer {
         ),
     },
     async ({ query }) => {
+      const start = Date.now();
       const results = searchSpec(query);
+
+      log({
+        type: "tool_call",
+        severity: "info",
+        method: "search",
+        summary: `search: "${query}" → ${results.length} results (${Date.now() - start}ms)`,
+        details: {
+          query,
+          resultCount: results.length,
+          matchedMethods: results.map((m) => m.name),
+        },
+        durationMs: Date.now() - start,
+      });
 
       if (results.length === 0) {
         return {
@@ -83,7 +98,28 @@ ${TYPE_DEFINITIONS}`,
         ),
     },
     async ({ code }) => {
+      const start = Date.now();
+
+      log({
+        type: "tool_call",
+        severity: "warning",
+        method: "execute",
+        summary: `execute: ${code.length} chars of code`,
+        details: { code },
+      });
+
       const result = await executeCode(code, api);
+      const durationMs = Date.now() - start;
+
+      log({
+        type: "tool_call",
+        severity: "info",
+        method: "execute.complete",
+        summary: `execute: completed (${durationMs}ms, ${result.length} chars output)`,
+        details: { outputSize: result.length },
+        durationMs,
+      });
+
       return {
         content: [{ type: "text" as const, text: result }],
       };

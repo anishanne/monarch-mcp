@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -7,6 +8,8 @@ import { createGraphQLClient } from "./graphql/client.js";
 import { createAPI } from "./sdk/index.js";
 import { createServer } from "./server.js";
 import { SimpleOAuthProvider } from "./auth.js";
+import { connectDB, setRequestId, log, getLogs } from "./logger.js";
+import { renderDashboard } from "./dashboard.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -21,6 +24,9 @@ if (!MONARCH_TOKEN) {
   console.error("Missing MONARCH_TOKEN");
   process.exit(1);
 }
+
+// Connect to MongoDB (non-blocking)
+connectDB();
 
 const provider = new SimpleOAuthProvider(AUTH_TOKEN);
 
@@ -71,6 +77,13 @@ app.post("/approve", express.json(), (req, res) => {
   const { clientId, redirectUri, codeChallenge, state, token } = req.body;
 
   if (token !== AUTH_TOKEN) {
+    log({
+      type: "auth",
+      severity: "critical",
+      method: "approve",
+      summary: "Auth code request REJECTED: invalid token",
+      details: { clientId: clientId?.slice(0, 20) + "...", redirectUri },
+    });
     res.status(401).json({ error: "Invalid token" });
     return;
   }
@@ -80,6 +93,14 @@ app.post("/approve", express.json(), (req, res) => {
     codeChallenge,
     redirectUri
   );
+
+  log({
+    type: "auth",
+    severity: "info",
+    method: "approve",
+    summary: "Auth code issued",
+    details: { redirectUri },
+  });
 
   const redirectUrl = new URL(redirectUri);
   redirectUrl.searchParams.set("code", code);
@@ -92,6 +113,16 @@ app.post("/approve", express.json(), (req, res) => {
 const bearerAuth = requireBearerAuth({ verifier: provider });
 
 app.post("/mcp", bearerAuth, async (req, res) => {
+  const requestId = crypto.randomUUID();
+  setRequestId(requestId);
+
+  log({
+    type: "auth",
+    severity: "info",
+    method: "mcp",
+    summary: `MCP request authenticated (${requestId.slice(0, 8)})`,
+  });
+
   const client = createGraphQLClient(MONARCH_TOKEN!);
   const api = createAPI(client);
   const mcpServer = createServer(api);
@@ -132,6 +163,56 @@ app.delete("/mcp", bearerAuth, (_req, res) => {
   });
 });
 
+// Dashboard token check middleware
+function requireDashboardAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const token = req.query.token as string;
+  if (token !== AUTH_TOKEN) {
+    res.status(401).send("Unauthorized. Append ?token=YOUR_MCP_AUTH_TOKEN");
+    return;
+  }
+  next();
+}
+
+// Dashboard HTML
+app.get("/dashboard", requireDashboardAuth, async (req, res) => {
+  const query = {
+    type: (req.query.type as string) ?? "",
+    severity: (req.query.severity as string) ?? "",
+    limit: (req.query.limit as string) ?? "100",
+    offset: (req.query.offset as string) ?? "0",
+    requestId: (req.query.requestId as string) ?? "",
+  };
+
+  const { logs, total } = await getLogs({
+    type: query.type || undefined,
+    severity: query.severity || undefined,
+    limit: parseInt(query.limit),
+    offset: parseInt(query.offset),
+    requestId: query.requestId || undefined,
+  });
+
+  res.setHeader("Content-Type", "text/html");
+  res.send(renderDashboard(logs, total, query, AUTH_TOKEN!));
+});
+
+// Dashboard JSON API
+app.get("/api/logs", requireDashboardAuth, async (req, res) => {
+  const result = await getLogs({
+    type: (req.query.type as string) || undefined,
+    severity: (req.query.severity as string) || undefined,
+    limit: parseInt((req.query.limit as string) ?? "100"),
+    offset: parseInt((req.query.offset as string) ?? "0"),
+    startDate: (req.query.startDate as string) || undefined,
+    endDate: (req.query.endDate as string) || undefined,
+    requestId: (req.query.requestId as string) || undefined,
+  });
+  res.json(result);
+});
+
 // Health check
 app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "monarch-mcp", mcp: "/mcp" });
@@ -143,6 +224,7 @@ export default app;
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`MCP server listening on http://localhost:${PORT}/mcp`);
+    console.log(`Dashboard at http://localhost:${PORT}/dashboard?token=YOUR_TOKEN`);
     console.log(
       `OAuth metadata at http://localhost:${PORT}/.well-known/oauth-authorization-server`
     );
