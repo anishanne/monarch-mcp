@@ -1,7 +1,8 @@
-import type { AuditLog } from "./logger.js";
+import type { AuditLog, RequestStats } from "./logger.js";
 
 const SEVERITY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   info: { bg: "#052e16", text: "#22c55e", border: "#166534" },
+  action: { bg: "#0c1a3d", text: "#60a5fa", border: "#1e3a5f" },
   warning: { bg: "#422006", text: "#eab308", border: "#854d0e" },
   critical: { bg: "#450a0a", text: "#ef4444", border: "#991b1b" },
 };
@@ -24,20 +25,96 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function formatValue(key: string, value: any): string {
+  if (value === null || value === undefined) return `<span class="dt-null">null</span>`;
+  if (typeof value === "boolean") return `<span class="dt-bool">${value}</span>`;
+  if (typeof value === "number") return `<span class="dt-num">${value}</span>`;
+
+  const str = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+
+  // Code blocks — detect by key name or multi-line JS
+  if (key === "code" || (typeof value === "string" && value.includes("await api."))) {
+    return `<div class="dt-code">${escapeHtml(str.trim())}</div>`;
+  }
+
+  // Short strings inline
+  if (typeof value === "string" && str.length < 120) {
+    return `<span class="dt-str">"${escapeHtml(str)}"</span>`;
+  }
+
+  // Arrays and objects
+  if (typeof value === "object") {
+    return `<span class="dt-str">${escapeHtml(JSON.stringify(value, null, 2))}</span>`;
+  }
+
+  return `<span class="dt-str">"${escapeHtml(str)}"</span>`;
+}
+
 function formatDetails(details: any): string {
   if (!details) return "";
-  try {
-    return escapeHtml(JSON.stringify(details, null, 2));
-  } catch {
-    return escapeHtml(String(details));
-  }
+  if (typeof details !== "object") return escapeHtml(String(details));
+
+  const rows = Object.entries(details).map(([key, value]) => {
+    return `<div class="dt-row"><span class="dt-key">${escapeHtml(key)}</span>${formatValue(key, value)}</div>`;
+  });
+  return rows.join("");
+}
+
+function renderStats(stats: RequestStats): string {
+  const maxVal = Math.max(1, ...stats.hourly.map((h) => h.mcp + h.monarch));
+  const barHeight = 40;
+
+  const bars = stats.hourly
+    .map((h) => {
+      const mcpH = Math.round((h.mcp / maxVal) * barHeight);
+      const monarchH = Math.round((h.monarch / maxVal) * barHeight);
+      const hour = h.hour.slice(11, 16);
+      const title = `${hour} — MCP: ${h.mcp}, Monarch: ${h.monarch}`;
+      return `<div class="bar-col" title="${title}">
+  <div class="bar-stack">
+    <div class="bar-seg bar-monarch" style="height:${monarchH}px"></div>
+    <div class="bar-seg bar-mcp" style="height:${mcpH}px"></div>
+  </div>
+  <span class="bar-label">${hour}</span>
+</div>`;
+    })
+    .join("");
+
+  return `<div class="stats-panel">
+  <div class="stats-counters">
+    <div class="stat-card">
+      <div class="stat-num">${stats.mcpRequests}</div>
+      <div class="stat-label">MCP Requests <span class="stat-period">24h</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num ${stats.monarchRequests > 500 ? "stat-warn" : ""}">${stats.monarchRequests}</div>
+      <div class="stat-label">Monarch API Calls <span class="stat-period">24h</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num ${stats.tokenRefreshes > 5 ? "stat-warn" : ""}">${stats.tokenRefreshes}</div>
+      <div class="stat-label">Token Refreshes <span class="stat-period">24h</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">${stats.mcpRequests > 0 ? (stats.monarchRequests / stats.mcpRequests).toFixed(1) : "0"}</div>
+      <div class="stat-label">API Calls / Request</div>
+    </div>
+  </div>
+  <div class="chart-container">
+    <div class="chart-legend">
+      <span><span class="legend-dot" style="background:#60a5fa"></span>MCP</span>
+      <span><span class="legend-dot" style="background:#f97316"></span>Monarch</span>
+    </div>
+    <div class="chart-bars">${bars}</div>
+  </div>
+</div>`;
 }
 
 export function renderDashboard(
   logs: AuditLog[],
   total: number,
   query: Record<string, string>,
-  token: string
+  token: string,
+  stats: RequestStats
 ): string {
   const currentType = query.type ?? "";
   const currentSeverity = query.severity ?? "";
@@ -73,7 +150,7 @@ export function renderDashboard(
   <td class="duration">${duration}</td>
   <td class="req-id"><a href="/dashboard?token=${token}&requestId=${log.requestId}" class="rid">${log.requestId.slice(0, 8)}</a></td>
 </tr>
-${hasDetails ? `<tr class="detail-row" id="detail-${i}" style="display:none"><td colspan="8"><pre class="detail-pre">${formatDetails(log.details)}</pre></td></tr>` : ""}`;
+${hasDetails ? `<tr class="detail-row" id="detail-${i}" style="display:none"><td colspan="8"><div class="detail-box">${formatDetails(log.details)}</div></td></tr>` : ""}`;
     })
     .join("\n");
 
@@ -122,19 +199,59 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 .req-id { }
 .rid { color: #555; text-decoration: none; font-size: 0.75rem; }
 .rid:hover { color: #93c5fd; }
-.detail-pre { background: #111; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; color: #a3a3a3; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.detail-box { background: #111; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; color: #a3a3a3; max-height: 400px; overflow-y: auto; }
+.dt-row { margin-bottom: 0.5rem; }
+.dt-key { color: #7c8594; margin-right: 0.5rem; }
+.dt-key::after { content: ":"; }
+.dt-str { color: #a3a3a3; white-space: pre-wrap; word-break: break-all; }
+.dt-num { color: #fbbf24; }
+.dt-bool { color: #60a5fa; }
+.dt-null { color: #555; font-style: italic; }
+.dt-code { background: #0d0d0d; border: 1px solid #222; border-radius: 4px; padding: 0.75rem; margin-top: 0.25rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #e2e8f0; white-space: pre; overflow-x: auto; line-height: 1.5; }
 .pagination { padding: 1rem 2rem; display: flex; gap: 0.5rem; justify-content: center; border-top: 1px solid #1a1a1a; }
 .pagination a { color: #888; text-decoration: none; padding: 0.4rem 0.8rem; border: 1px solid #333; border-radius: 4px; font-size: 0.8rem; }
 .pagination a:hover { color: #e5e5e5; border-color: #555; }
 .pagination .disabled { color: #333; border-color: #1a1a1a; pointer-events: none; }
 .empty { padding: 3rem; text-align: center; color: #555; }
+.live-controls { display: flex; align-items: center; gap: 0.5rem; }
+.live-btn { background: #111; border: 1px solid #333; border-radius: 6px; padding: 0.3rem 0.75rem; color: #888; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; font-family: inherit; letter-spacing: 0.05em; }
+.live-btn:hover { border-color: #555; }
+.live-btn.live-on { border-color: #166534; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex-shrink: 0; }
+.live-dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.stats-panel { padding: 1.25rem 2rem; border-bottom: 1px solid #1a1a1a; display: flex; gap: 2rem; align-items: flex-end; }
+.stats-counters { display: flex; gap: 1.5rem; flex-shrink: 0; }
+.stat-card { background: #111; border: 1px solid #222; border-radius: 8px; padding: 0.75rem 1.25rem; min-width: 120px; }
+.stat-num { font-size: 1.5rem; font-weight: 700; color: #e5e5e5; line-height: 1; }
+.stat-num.stat-warn { color: #f97316; }
+.stat-label { font-size: 0.7rem; color: #666; margin-top: 0.25rem; }
+.stat-period { color: #444; }
+.chart-container { flex: 1; min-width: 0; }
+.chart-legend { font-size: 0.7rem; color: #666; margin-bottom: 0.25rem; display: flex; gap: 1rem; }
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
+.chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 50px; }
+.bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }
+.bar-stack { display: flex; flex-direction: column-reverse; }
+.bar-seg { width: 100%; min-height: 0; border-radius: 1px; }
+.bar-mcp { background: #60a5fa; }
+.bar-monarch { background: #f97316; }
+.bar-label { font-size: 0.55rem; color: #444; margin-top: 2px; }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>Monarch MCP Audit Log</h1>
   <span class="count">${total} events${currentRequestId ? ` (request ${currentRequestId.slice(0, 8)}...)` : ""}</span>
+  <div class="live-controls">
+    <button id="live-toggle" class="live-btn live-on" onclick="toggleLive()">
+      <span id="live-dot" class="live-dot on"></span>
+      <span id="live-label">LIVE</span>
+    </button>
+  </div>
 </div>
+
+${renderStats(stats)}
 
 <div class="filters">
   <span style="color:#555;font-size:0.75rem">TYPE:</span>
@@ -153,7 +270,7 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
   <span class="sep">|</span>
   <span style="color:#555;font-size:0.75rem">SEVERITY:</span>
   <a href="/dashboard?${filterParams({ severity: "", offset: "0" })}" class="${!currentSeverity ? "active" : ""}">All</a>
-  ${["info", "warning", "critical"]
+  ${["info", "action", "warning", "critical"]
     .map((s) => {
       const c = SEVERITY_COLORS[s];
       return `<a href="/dashboard?${filterParams({ severity: s, offset: "0" })}" class="${currentSeverity === s ? "active" : ""}" style="color:${c.text}">${s}</a>`;
@@ -187,10 +304,87 @@ ${rows || '<tr><td colspan="8" class="empty">No events found.</td></tr>'}
 </div>
 
 <script>
+let live = true;
+let refreshTimer = null;
+const REFRESH_INTERVAL = 5000;
+
 function toggleDetail(i) {
   const row = document.getElementById('detail-' + i);
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
+
+function toggleLive() {
+  live = !live;
+  const dot = document.getElementById('live-dot');
+  const label = document.getElementById('live-label');
+  const btn = document.getElementById('live-toggle');
+  if (live) {
+    dot.className = 'live-dot on';
+    label.textContent = 'LIVE';
+    btn.className = 'live-btn live-on';
+    startRefresh();
+  } else {
+    dot.className = 'live-dot';
+    label.textContent = 'PAUSED';
+    btn.className = 'live-btn';
+    stopRefresh();
+  }
+}
+
+function startRefresh() {
+  stopRefresh();
+  refreshTimer = setInterval(doRefresh, REFRESH_INTERVAL);
+}
+
+function stopRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+async function doRefresh() {
+  if (!live) return;
+  try {
+    const res = await fetch(window.location.href, { headers: { 'Accept': 'text/html' } });
+    if (!res.ok) return;
+    const html = await res.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // Remember which details are expanded
+    const expanded = new Set();
+    document.querySelectorAll('.detail-row').forEach(row => {
+      if (row.style.display !== 'none') expanded.add(row.id);
+    });
+
+    // Update stats
+    const newStats = doc.querySelector('.stats-panel');
+    const oldStats = document.querySelector('.stats-panel');
+    if (newStats && oldStats) oldStats.innerHTML = newStats.innerHTML;
+
+    // Update count
+    const newCount = doc.querySelector('.count');
+    const oldCount = document.querySelector('.count');
+    if (newCount && oldCount) oldCount.innerHTML = newCount.innerHTML;
+
+    // Update table body
+    const newBody = doc.querySelector('tbody');
+    const oldBody = document.querySelector('tbody');
+    if (newBody && oldBody) oldBody.innerHTML = newBody.innerHTML;
+
+    // Update pagination
+    const newPag = doc.querySelector('.pagination');
+    const oldPag = document.querySelector('.pagination');
+    if (newPag && oldPag) oldPag.innerHTML = newPag.innerHTML;
+
+    // Restore expanded details
+    expanded.forEach(id => {
+      const row = document.getElementById(id);
+      if (row) row.style.display = '';
+    });
+  } catch {}
+}
+
+// Start live on load
+startRefresh();
 </script>
 </body>
 </html>`;

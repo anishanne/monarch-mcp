@@ -8,7 +8,14 @@ import { createGraphQLClient } from "./graphql/client.js";
 import { createAPI } from "./sdk/index.js";
 import { createServer } from "./server.js";
 import { SimpleOAuthProvider } from "./auth.js";
-import { connectDB, setRequestId, setMode, log, getLogs } from "./logger.js";
+import {
+  connectDB,
+  setRequestId,
+  setMode,
+  log,
+  getLogs,
+  getRequestStats,
+} from "./logger.js";
 import { initTokenManager } from "./token-manager.js";
 import { createRawServer } from "./raw-server.js";
 import { renderDashboard } from "./dashboard.js";
@@ -255,17 +262,20 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
     requestId: (req.query.requestId as string) ?? "",
   };
 
-  const { logs, total } = await getLogs({
-    type: query.type || undefined,
-    severity: query.severity || undefined,
-    mode: query.mode || undefined,
-    limit: parseInt(query.limit),
-    offset: parseInt(query.offset),
-    requestId: query.requestId || undefined,
-  });
+  const [{ logs, total }, stats] = await Promise.all([
+    getLogs({
+      type: query.type || undefined,
+      severity: query.severity || undefined,
+      mode: query.mode || undefined,
+      limit: parseInt(query.limit),
+      offset: parseInt(query.offset),
+      requestId: query.requestId || undefined,
+    }),
+    getRequestStats(),
+  ]);
 
   res.setHeader("Content-Type", "text/html");
-  res.send(renderDashboard(logs, total, query, AUTH_TOKEN!));
+  res.send(renderDashboard(logs, total, query, AUTH_TOKEN!, stats));
 });
 
 // Dashboard JSON API

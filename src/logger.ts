@@ -8,7 +8,7 @@ export type LogType =
   | "graphql"
   | "error"
   | "disabled";
-export type Severity = "info" | "warning" | "critical";
+export type Severity = "info" | "action" | "warning" | "critical";
 
 export type Mode = "code" | "raw";
 
@@ -100,7 +100,9 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): 
       ? "🔴"
       : doc.severity === "warning"
         ? "🟡"
-        : "🟢";
+        : doc.severity === "action"
+          ? "🔵"
+          : "🟢";
   console.log(`${prefix} [${doc.type}] ${doc.summary}`);
 
   // Fire-and-forget to MongoDB
@@ -122,6 +124,80 @@ export interface LogQuery {
   startDate?: string;
   endDate?: string;
   requestId?: string;
+}
+
+export interface RequestStats {
+  mcpRequests: number;
+  monarchRequests: number;
+  tokenRefreshes: number;
+  hourly: Array<{ hour: string; mcp: number; monarch: number }>;
+}
+
+export async function getRequestStats(): Promise<RequestStats> {
+  if (!collection)
+    return { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hourly: [] };
+
+  const now = new Date();
+  const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const [mcpRequests, monarchRequests, tokenRefreshes, hourlyAgg] =
+    await Promise.all([
+    // MCP requests = auth logs for mcp/mcp-raw endpoints (24h)
+    collection.countDocuments({
+      type: "auth",
+      method: { $in: ["mcp", "mcp/raw"] },
+      timestamp: { $gte: twentyFourHoursAgo },
+    }),
+    // Monarch API requests = graphql logs (24h)
+    collection.countDocuments({
+      type: "graphql",
+      timestamp: { $gte: twentyFourHoursAgo },
+    }),
+    // Token refreshes = token logs with method login (24h)
+    collection.countDocuments({
+      type: "token",
+      method: "login",
+      timestamp: { $gte: twentyFourHoursAgo },
+    }),
+    // Hourly breakdown for last 24h
+    collection
+      .aggregate([
+        { $match: { timestamp: { $gte: twentyFourHoursAgo } } },
+        {
+          $group: {
+            _id: {
+              hour: { $dateToString: { format: "%Y-%m-%dT%H:00", date: "$timestamp" } },
+              isMcp: { $cond: [{ $and: [{ $eq: ["$type", "auth"] }, { $in: ["$method", ["mcp", "mcp/raw"]] }] }, true, false] },
+              isMonarch: { $cond: [{ $eq: ["$type", "graphql"] }, true, false] },
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ])
+      .toArray(),
+  ]);
+
+  // Build hourly map
+  const hourMap = new Map<string, { mcp: number; monarch: number }>();
+  for (let i = 23; i >= 0; i--) {
+    const h = new Date(now.getTime() - i * 60 * 60 * 1000);
+    const key = h.toISOString().slice(0, 13) + ":00";
+    hourMap.set(key, { mcp: 0, monarch: 0 });
+  }
+  for (const row of hourlyAgg) {
+    const key = row._id.hour;
+    const entry = hourMap.get(key);
+    if (!entry) continue;
+    if (row._id.isMcp) entry.mcp += row.count;
+    if (row._id.isMonarch) entry.monarch += row.count;
+  }
+
+  const hourly = [...hourMap.entries()].map(([hour, counts]) => ({
+    hour,
+    ...counts,
+  }));
+
+  return { mcpRequests, monarchRequests, tokenRefreshes, hourly };
 }
 
 export async function getLogs(query: LogQuery): Promise<{

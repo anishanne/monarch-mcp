@@ -102,7 +102,7 @@ ${TYPE_DEFINITIONS}`,
 
       log({
         type: "tool_call",
-        severity: "warning",
+        severity: "action",
         method: "execute",
         summary: `execute: ${code.length} chars of code`,
         details: { code },
