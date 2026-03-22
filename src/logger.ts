@@ -2,6 +2,7 @@ import { MongoClient, type Collection, type Db } from "mongodb";
 
 export type LogType =
   | "auth"
+  | "token"
   | "tool_call"
   | "sdk_call"
   | "graphql"

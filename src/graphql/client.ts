@@ -1,5 +1,11 @@
 import { log, getSeverity } from "../logger.js";
-import { getToken, getAllTokenCandidates, refreshToken, clearCachedToken, saveToken } from "../token-manager.js";
+import {
+  getToken,
+  getAllTokenCandidates,
+  refreshToken,
+  clearCachedToken,
+  saveToken,
+} from "../token-manager.js";
 
 const GRAPHQL_ENDPOINT = "https://api.monarch.com/graphql";
 
@@ -28,6 +34,109 @@ async function doFetch(
   });
 }
 
+async function resolveToken(
+  operation: string,
+  initialToken: string,
+  query: string,
+  variables: Record<string, any> | undefined,
+  initialRes: Response,
+  startTime: number
+): Promise<{ res: Response; token: string }> {
+  // Step 1: Token expired
+  log({
+    type: "token",
+    severity: "warning",
+    method: "expired",
+    summary: `Token expired during ${operation}`,
+    details: { operation, tokenPrefix: initialToken.slice(0, 8) + "..." },
+    durationMs: Date.now() - startTime,
+  });
+
+  clearCachedToken();
+  const candidates = await getAllTokenCandidates();
+  let candidatesTried = 0;
+
+  // Step 2: Try alternate tokens
+  for (const candidate of candidates) {
+    if (candidate === initialToken) continue;
+    candidatesTried++;
+    const source =
+      candidate === process.env.MONARCH_TOKEN ? "env var" : "database";
+
+    log({
+      type: "token",
+      severity: "info",
+      method: "retry",
+      summary: `Trying alternate token from ${source}`,
+      details: { operation, source, tokenPrefix: candidate.slice(0, 8) + "..." },
+    });
+
+    const res = await doFetch(query, variables, candidate);
+    if (res.status !== 401) {
+      await saveToken(candidate);
+      log({
+        type: "token",
+        severity: "info",
+        method: "retry",
+        summary: `Alternate token from ${source} worked`,
+        durationMs: Date.now() - startTime,
+      });
+      return { res, token: candidate };
+    }
+  }
+
+  // Step 3: All tokens failed — login refresh
+  log({
+    type: "token",
+    severity: "warning",
+    method: "refresh",
+    summary: `All ${candidatesTried + 1} tokens rejected — logging in to Monarch`,
+    details: { operation, candidatesTried: candidatesTried + 1 },
+    durationMs: Date.now() - startTime,
+  });
+
+  let newToken: string;
+  try {
+    newToken = await refreshToken();
+  } catch (err: any) {
+    log({
+      type: "token",
+      severity: "critical",
+      method: "refresh",
+      summary: `Login failed: ${err.message}`,
+      details: { operation, error: err.message },
+      durationMs: Date.now() - startTime,
+    });
+    throw new Error(
+      `Monarch token expired and auto-refresh failed: ${err.message}`
+    );
+  }
+
+  const res = await doFetch(query, variables, newToken);
+
+  if (res.status === 401) {
+    log({
+      type: "token",
+      severity: "critical",
+      method: "refresh",
+      summary: "Fresh token from login also rejected (401)",
+      details: { operation },
+      durationMs: Date.now() - startTime,
+    });
+    throw new Error("All Monarch tokens rejected and fresh login also failed.");
+  }
+
+  log({
+    type: "token",
+    severity: "info",
+    method: "refresh",
+    summary: "Login succeeded — new token saved to database",
+    durationMs: Date.now() - startTime,
+  });
+
+  return { res, token: newToken };
+}
+
 export function createGraphQLClient(): GraphQLClient {
   return {
     async query<T = any>(
@@ -40,103 +149,30 @@ export function createGraphQLClient(): GraphQLClient {
       try {
         let token = await getToken();
         let res = await doFetch(query, variables, token);
-        let durationMs = Date.now() - start;
 
-        // On 401, try all token candidates before falling back to login refresh
+        // Auto-resolve on 401
         if (res.status === 401) {
-          log({
-            type: "auth",
-            severity: "warning",
-            method: "token_retry",
-            summary: `GraphQL ${operation}: 401 — trying all token candidates`,
-            details: { operation },
-            durationMs,
-          });
-
-          clearCachedToken();
-          const candidates = await getAllTokenCandidates();
-
-          // Try each candidate (skip the one that already failed)
-          for (const candidate of candidates) {
-            if (candidate === token) continue;
-            res = await doFetch(query, variables, candidate);
-            durationMs = Date.now() - start;
-            if (res.status !== 401) {
-              // This token works — promote it
-              await saveToken(candidate);
-              log({
-                type: "auth",
-                severity: "info",
-                method: "token_retry",
-                summary: `Token candidate succeeded for ${operation}`,
-                durationMs,
-              });
-              token = candidate;
-              break;
-            }
-          }
-
-          // If still 401 after all candidates, do a full login refresh
-          if (res.status === 401) {
-            log({
-              type: "auth",
-              severity: "warning",
-              method: "token_auto_refresh",
-              summary: `All token candidates failed — attempting login refresh`,
-              details: { operation, candidatesTried: candidates.length },
-              durationMs,
-            });
-
-            try {
-              token = await refreshToken();
-            } catch (refreshErr: any) {
-              log({
-                type: "auth",
-                severity: "critical",
-                method: "token_auto_refresh",
-                summary: `Token refresh failed: ${refreshErr.message}`,
-                details: { operation, error: refreshErr.message },
-                durationMs: Date.now() - start,
-              });
-              throw new Error(
-                `Monarch token expired and auto-refresh failed: ${refreshErr.message}`
-              );
-            }
-
-            res = await doFetch(query, variables, token);
-            durationMs = Date.now() - start;
-
-            if (res.status === 401) {
-              log({
-                type: "auth",
-                severity: "critical",
-                method: "token_auto_refresh",
-                summary: "Retry after login refresh still returned 401",
-                details: { operation },
-                durationMs,
-              });
-              throw new Error(
-                "All Monarch tokens rejected and fresh login also failed."
-              );
-            }
-
-            log({
-              type: "auth",
-              severity: "info",
-              method: "token_auto_refresh",
-              summary: `Login refresh succeeded — retried ${operation}`,
-              durationMs,
-            });
-          }
+          const resolved = await resolveToken(
+            operation,
+            token,
+            query,
+            variables,
+            res,
+            start
+          );
+          res = resolved.res;
+          token = resolved.token;
         }
+
+        const durationMs = Date.now() - start;
 
         if (!res.ok) {
           log({
             type: "graphql",
             severity: "critical",
             method: operation,
-            summary: `GraphQL ${operation}: ${res.status} ${res.statusText}`,
-            details: { operation, variables, status: res.status },
+            summary: `${operation} → ${res.status} ${res.statusText} (${durationMs}ms)`,
+            details: { variables, status: res.status },
             durationMs,
           });
           throw new Error(
@@ -147,15 +183,13 @@ export function createGraphQLClient(): GraphQLClient {
         const json: any = await res.json();
 
         if (json.errors?.length) {
-          const errMsg = json.errors
-            .map((e: any) => e.message)
-            .join(", ");
+          const errMsg = json.errors.map((e: any) => e.message).join(", ");
           log({
             type: "graphql",
             severity: "critical",
             method: operation,
-            summary: `GraphQL ${operation}: error — ${errMsg}`,
-            details: { operation, variables, errors: json.errors },
+            summary: `${operation} → GraphQL error: ${errMsg} (${durationMs}ms)`,
+            details: { variables, errors: json.errors },
             durationMs,
           });
           throw new Error(`GraphQL error: ${errMsg}`);
@@ -166,8 +200,8 @@ export function createGraphQLClient(): GraphQLClient {
           type: "graphql",
           severity: getSeverity(operation),
           method: operation,
-          summary: `GraphQL ${operation}: OK (${responseSize} bytes, ${durationMs}ms)`,
-          details: { operation, variables, responseSize },
+          summary: `${operation} → OK (${(responseSize / 1024).toFixed(1)}KB, ${durationMs}ms)`,
+          details: { variables, responseSize },
           durationMs,
         });
 
@@ -182,8 +216,8 @@ export function createGraphQLClient(): GraphQLClient {
             type: "error",
             severity: "critical",
             method: operation,
-            summary: `GraphQL ${operation}: ${err.message}`,
-            details: { operation, variables, error: err.message },
+            summary: `${operation} → ${err.message}`,
+            details: { variables, error: err.message },
             durationMs: Date.now() - start,
           });
         }

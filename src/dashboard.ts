@@ -8,6 +8,7 @@ const SEVERITY_COLORS: Record<string, { bg: string; text: string; border: string
 
 const TYPE_LABELS: Record<string, string> = {
   auth: "AUTH",
+  token: "TOKEN",
   tool_call: "TOOL",
   sdk_call: "SDK",
   graphql: "GQL",
@@ -138,7 +139,7 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 <div class="filters">
   <span style="color:#555;font-size:0.75rem">TYPE:</span>
   <a href="/dashboard?${filterParams({ type: "", offset: "0" })}" class="${!currentType ? "active" : ""}">All</a>
-  ${["auth", "tool_call", "sdk_call", "graphql", "error", "disabled"]
+  ${["auth", "token", "tool_call", "sdk_call", "graphql", "error", "disabled"]
     .map(
       (t) =>
         `<a href="/dashboard?${filterParams({ type: t, offset: "0" })}" class="${currentType === t ? "active" : ""}">${TYPE_LABELS[t]}</a>`

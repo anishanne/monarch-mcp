@@ -156,12 +156,14 @@ export async function refreshToken(): Promise<string> {
   }
 
   const mfaSecret = process.env.MONARCH_MFA_SECRET;
+  const start = Date.now();
 
   log({
-    type: "auth",
+    type: "token",
     severity: "warning",
-    method: "token_refresh",
-    summary: `Auto-refreshing Monarch token for ${email}${mfaSecret ? " (with TOTP)" : ""}`,
+    method: "login",
+    summary: `Logging in as ${email}${mfaSecret ? " (with TOTP)" : ""}`,
+    details: { email, hasMfa: !!mfaSecret },
   });
 
   const body: Record<string, any> = {
@@ -184,13 +186,15 @@ export async function refreshToken(): Promise<string> {
     body: JSON.stringify(body),
   });
 
+  const durationMs = Date.now() - start;
+
   if (res.status === 403 && !mfaSecret) {
     log({
-      type: "auth",
+      type: "token",
       severity: "critical",
-      method: "token_refresh",
-      summary:
-        "Token refresh failed: MFA required but MONARCH_MFA_SECRET not set",
+      method: "login",
+      summary: "Login failed: MFA required but MONARCH_MFA_SECRET not set",
+      durationMs,
     });
     throw new Error(
       "MFA required. Set MONARCH_MFA_SECRET env var with your TOTP secret."
@@ -200,11 +204,12 @@ export async function refreshToken(): Promise<string> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     log({
-      type: "auth",
+      type: "token",
       severity: "critical",
-      method: "token_refresh",
-      summary: `Token refresh failed: ${res.status} ${res.statusText}`,
+      method: "login",
+      summary: `Login failed → ${res.status} ${res.statusText}`,
       details: { status: res.status, body: text.slice(0, 500) },
+      durationMs,
     });
     throw new Error(
       `Monarch login failed: ${res.status} ${res.statusText}`
@@ -216,11 +221,12 @@ export async function refreshToken(): Promise<string> {
 
   if (!token) {
     log({
-      type: "auth",
+      type: "token",
       severity: "critical",
-      method: "token_refresh",
-      summary: "Token refresh failed: no token in response",
-      details: { response: data },
+      method: "login",
+      summary: "Login response missing token field",
+      details: { responseKeys: Object.keys(data) },
+      durationMs,
     });
     throw new Error("Monarch login response missing token");
   }
@@ -228,10 +234,12 @@ export async function refreshToken(): Promise<string> {
   await saveToken(token);
 
   log({
-    type: "auth",
+    type: "token",
     severity: "info",
-    method: "token_refresh",
-    summary: "Monarch token refreshed and saved to database",
+    method: "login",
+    summary: `Login succeeded — new token saved (${durationMs}ms)`,
+    details: { email, tokenPrefix: token.slice(0, 8) + "..." },
+    durationMs,
   });
 
   return token;

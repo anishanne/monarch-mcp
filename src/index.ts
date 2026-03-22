@@ -230,6 +230,22 @@ function requireDashboardAuth(
 
 // Dashboard HTML
 app.get("/dashboard", requireDashboardAuth, async (req, res) => {
+  await dbReady;
+
+  log({
+    type: "auth",
+    severity: "info",
+    method: "dashboard",
+    summary: "Dashboard viewed",
+    details: {
+      filters: {
+        type: req.query.type || "all",
+        severity: req.query.severity || "all",
+        mode: req.query.mode || "all",
+      },
+    },
+  });
+
   const query = {
     type: (req.query.type as string) ?? "",
     severity: (req.query.severity as string) ?? "",
@@ -254,6 +270,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
 
 // Dashboard JSON API
 app.get("/api/logs", requireDashboardAuth, async (req, res) => {
+  await dbReady;
   const result = await getLogs({
     type: (req.query.type as string) || undefined,
     severity: (req.query.severity as string) || undefined,
