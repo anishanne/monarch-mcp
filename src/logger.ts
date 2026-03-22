@@ -53,19 +53,21 @@ export async function connectDB(): Promise<void> {
     console.warn("MONGODB_URI not set — audit logging disabled");
     return;
   }
+  console.log("Connecting to MongoDB...");
   try {
     client = new MongoClient(uri);
     await client.connect();
     db = client.db("monarch_mcp");
     collection = db.collection<AuditLog>("audit_logs");
-    await collection.createIndex({ timestamp: -1 });
-    await collection.createIndex({ type: 1 });
-    await collection.createIndex({ severity: 1 });
-    await collection.createIndex({ requestId: 1 });
-    await collection.createIndex({ mode: 1 });
+    // Create indexes in background — don't block startup
+    collection.createIndex({ timestamp: -1 }).catch(() => {});
+    collection.createIndex({ type: 1 }).catch(() => {});
+    collection.createIndex({ severity: 1 }).catch(() => {});
+    collection.createIndex({ requestId: 1 }).catch(() => {});
+    collection.createIndex({ mode: 1 }).catch(() => {});
     console.log("MongoDB connected — audit logging enabled");
-  } catch (err) {
-    console.error("MongoDB connection failed:", err);
+  } catch (err: any) {
+    console.error("MongoDB connection failed:", err.message ?? err);
     client = null;
     db = null;
     collection = null;
@@ -105,6 +107,8 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): 
     collection.insertOne(doc).catch((err) => {
       console.error("Failed to write audit log:", err.message);
     });
+  } else {
+    console.warn("⚠️  Audit log skipped — MongoDB not connected");
   }
 }
 
