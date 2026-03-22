@@ -195,13 +195,24 @@ export function createGraphQLClient(): GraphQLClient {
           throw new Error(`GraphQL error: ${errMsg}`);
         }
 
-        const responseSize = JSON.stringify(json.data).length;
+        const responseStr = JSON.stringify(json.data);
+        const responseSize = responseStr.length;
+        // Store response (truncate at 100KB to fit MongoDB doc limits)
+        const response =
+          responseSize > 100_000
+            ? JSON.parse(responseStr.slice(0, 100_000) + "}")
+            : json.data;
         log({
           type: "graphql",
           severity: getSeverity(operation),
           method: operation,
           summary: `${operation} → OK (${(responseSize / 1024).toFixed(1)}KB, ${durationMs}ms)`,
-          details: { variables, responseSize },
+          details: {
+            variables,
+            responseSize,
+            response,
+            ...(responseSize > 100_000 ? { truncated: true } : {}),
+          },
           durationMs,
         });
 

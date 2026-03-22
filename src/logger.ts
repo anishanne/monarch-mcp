@@ -130,74 +130,130 @@ export interface RequestStats {
   mcpRequests: number;
   monarchRequests: number;
   tokenRefreshes: number;
-  hourly: Array<{ hour: string; mcp: number; monarch: number }>;
+  hours: number;
+  buckets: Array<{ label: string; mcp: number; monarch: number }>;
 }
 
-export async function getRequestStats(): Promise<RequestStats> {
+export async function getRequestStats(hours: number = 24): Promise<RequestStats> {
   if (!collection)
-    return { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hourly: [] };
+    return { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hours, buckets: [] };
 
   const now = new Date();
-  const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const since = new Date(now.getTime() - hours * 60 * 60 * 1000);
+  const timeFilter = { $gte: since };
 
-  const [mcpRequests, monarchRequests, tokenRefreshes, hourlyAgg] =
+  // Bucket size: <=6h → 15min, <=24h → 1h, <=72h → 3h, <=168h → 6h, else 24h
+  let bucketMinutes: number;
+  let dateFormat: string;
+  if (hours <= 6) {
+    bucketMinutes = 15;
+    dateFormat = "%Y-%m-%dT%H:%M";
+  } else if (hours <= 24) {
+    bucketMinutes = 60;
+    dateFormat = "%Y-%m-%dT%H:00";
+  } else if (hours <= 72) {
+    bucketMinutes = 180;
+    dateFormat = "%Y-%m-%dT%H:00";
+  } else if (hours <= 168) {
+    bucketMinutes = 360;
+    dateFormat = "%Y-%m-%dT%H:00";
+  } else {
+    bucketMinutes = 1440;
+    dateFormat = "%Y-%m-%d";
+  }
+
+  const [mcpRequests, monarchRequests, tokenRefreshes, mcpBuckets, monarchBuckets] =
     await Promise.all([
-    // MCP requests = auth logs for mcp/mcp-raw endpoints (24h)
-    collection.countDocuments({
-      type: "auth",
-      method: { $in: ["mcp", "mcp/raw"] },
-      timestamp: { $gte: twentyFourHoursAgo },
-    }),
-    // Monarch API requests = graphql logs (24h)
-    collection.countDocuments({
-      type: "graphql",
-      timestamp: { $gte: twentyFourHoursAgo },
-    }),
-    // Token refreshes = token logs with method login (24h)
-    collection.countDocuments({
-      type: "token",
-      method: "login",
-      timestamp: { $gte: twentyFourHoursAgo },
-    }),
-    // Hourly breakdown for last 24h
-    collection
-      .aggregate([
-        { $match: { timestamp: { $gte: twentyFourHoursAgo } } },
-        {
-          $group: {
-            _id: {
-              hour: { $dateToString: { format: "%Y-%m-%dT%H:00", date: "$timestamp" } },
-              isMcp: { $cond: [{ $and: [{ $eq: ["$type", "auth"] }, { $in: ["$method", ["mcp", "mcp/raw"]] }] }, true, false] },
-              isMonarch: { $cond: [{ $eq: ["$type", "graphql"] }, true, false] },
+      collection.countDocuments({
+        type: "auth",
+        method: { $in: ["mcp", "mcp/raw"] },
+        timestamp: timeFilter,
+      }),
+      collection.countDocuments({
+        type: "graphql",
+        timestamp: timeFilter,
+      }),
+      collection.countDocuments({
+        type: "token",
+        method: "login",
+        timestamp: timeFilter,
+      }),
+      // MCP requests by bucket
+      collection
+        .aggregate([
+          {
+            $match: {
+              type: "auth",
+              method: { $in: ["mcp", "mcp/raw"] },
+              timestamp: timeFilter,
             },
-            count: { $sum: 1 },
           },
-        },
-      ])
-      .toArray(),
-  ]);
+          {
+            $group: {
+              _id: { $dateToString: { format: dateFormat, date: "$timestamp" } },
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray(),
+      // Monarch API calls by bucket
+      collection
+        .aggregate([
+          {
+            $match: { type: "graphql", timestamp: timeFilter },
+          },
+          {
+            $group: {
+              _id: { $dateToString: { format: dateFormat, date: "$timestamp" } },
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray(),
+    ]);
 
-  // Build hourly map
-  const hourMap = new Map<string, { mcp: number; monarch: number }>();
-  for (let i = 23; i >= 0; i--) {
-    const h = new Date(now.getTime() - i * 60 * 60 * 1000);
-    const key = h.toISOString().slice(0, 13) + ":00";
-    hourMap.set(key, { mcp: 0, monarch: 0 });
+  // Build bucket map
+  const bucketCount = Math.ceil((hours * 60) / bucketMinutes);
+  const bucketMap = new Map<string, { mcp: number; monarch: number }>();
+  for (let i = bucketCount - 1; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * bucketMinutes * 60 * 1000);
+    // Snap to bucket boundary
+    if (bucketMinutes >= 1440) {
+      const key = t.toISOString().slice(0, 10);
+      bucketMap.set(key, { mcp: 0, monarch: 0 });
+    } else {
+      const mins = t.getMinutes();
+      const snapped = new Date(t);
+      snapped.setMinutes(Math.floor(mins / bucketMinutes) * bucketMinutes, 0, 0);
+      const key =
+        bucketMinutes < 60
+          ? snapped.toISOString().slice(0, 16)
+          : snapped.toISOString().slice(0, 13) + ":00";
+      bucketMap.set(key, { mcp: 0, monarch: 0 });
+    }
   }
-  for (const row of hourlyAgg) {
-    const key = row._id.hour;
-    const entry = hourMap.get(key);
-    if (!entry) continue;
-    if (row._id.isMcp) entry.mcp += row.count;
-    if (row._id.isMonarch) entry.monarch += row.count;
+
+  for (const row of mcpBuckets) {
+    const entry = bucketMap.get(row._id);
+    if (entry) entry.mcp += row.count;
+  }
+  for (const row of monarchBuckets) {
+    const entry = bucketMap.get(row._id);
+    if (entry) entry.monarch += row.count;
   }
 
-  const hourly = [...hourMap.entries()].map(([hour, counts]) => ({
-    hour,
-    ...counts,
-  }));
+  // Format labels
+  const buckets = [...bucketMap.entries()].map(([key, counts]) => {
+    let label: string;
+    if (bucketMinutes >= 1440) {
+      label = key.slice(5); // MM-DD
+    } else {
+      label = key.slice(11, 16); // HH:MM
+    }
+    return { label, ...counts };
+  });
 
-  return { mcpRequests, monarchRequests, tokenRefreshes, hourly };
+  return { mcpRequests, monarchRequests, tokenRefreshes, hours, buckets };
 }
 
 export async function getLogs(query: LogQuery): Promise<{

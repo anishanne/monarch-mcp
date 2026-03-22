@@ -25,6 +25,8 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
+let _collapseId = 0;
+
 function formatValue(key: string, value: any): string {
   if (value === null || value === undefined) return `<span class="dt-null">null</span>`;
   if (typeof value === "boolean") return `<span class="dt-bool">${value}</span>`;
@@ -37,14 +39,33 @@ function formatValue(key: string, value: any): string {
     return `<div class="dt-code">${escapeHtml(str.trim())}</div>`;
   }
 
+  // Large objects (response data, errors) — collapsible
+  if (key === "response" || key === "errors") {
+    const formatted = escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+    const id = `collapse-${_collapseId++}`;
+    const sizeLabel = str.length > 1024 ? `${(str.length / 1024).toFixed(1)}KB` : `${str.length}b`;
+    return `<div class="dt-collapse">
+      <button class="dt-collapse-btn" onclick="document.getElementById('${id}').classList.toggle('open')">${key} (${sizeLabel}) ▸</button>
+      <div class="dt-collapse-body" id="${id}"><pre class="dt-response">${formatted}</pre></div>
+    </div>`;
+  }
+
   // Short strings inline
   if (typeof value === "string" && str.length < 120) {
     return `<span class="dt-str">"${escapeHtml(str)}"</span>`;
   }
 
-  // Arrays and objects
+  // Medium objects — show inline
   if (typeof value === "object") {
-    return `<span class="dt-str">${escapeHtml(JSON.stringify(value, null, 2))}</span>`;
+    const formatted = escapeHtml(JSON.stringify(value, null, 2));
+    if (formatted.length > 500) {
+      const id = `collapse-${_collapseId++}`;
+      return `<div class="dt-collapse">
+        <button class="dt-collapse-btn" onclick="document.getElementById('${id}').classList.toggle('open')">${key} ▸</button>
+        <div class="dt-collapse-body" id="${id}"><pre class="dt-response">${formatted}</pre></div>
+      </div>`;
+    }
+    return `<span class="dt-str">${formatted}</span>`;
   }
 
   return `<span class="dt-str">"${escapeHtml(str)}"</span>`;
@@ -60,39 +81,62 @@ function formatDetails(details: any): string {
   return rows.join("");
 }
 
-function renderStats(stats: RequestStats): string {
-  const maxVal = Math.max(1, ...stats.hourly.map((h) => h.mcp + h.monarch));
-  const barHeight = 40;
+const TIMESCALES = [
+  { hours: 1, label: "1h" },
+  { hours: 6, label: "6h" },
+  { hours: 24, label: "24h" },
+  { hours: 72, label: "3d" },
+  { hours: 168, label: "7d" },
+  { hours: 720, label: "30d" },
+];
 
-  const bars = stats.hourly
-    .map((h) => {
-      const mcpH = Math.round((h.mcp / maxVal) * barHeight);
-      const monarchH = Math.round((h.monarch / maxVal) * barHeight);
-      const hour = h.hour.slice(11, 16);
-      const title = `${hour} — MCP: ${h.mcp}, Monarch: ${h.monarch}`;
+function renderStats(stats: RequestStats, token: string, currentQuery: Record<string, string>): string {
+  const maxVal = Math.max(1, ...stats.buckets.map((b) => b.mcp + b.monarch));
+  const barHeight = 40;
+  const periodLabel = TIMESCALES.find((t) => t.hours === stats.hours)?.label ?? `${stats.hours}h`;
+
+  // Show every Nth label to avoid crowding
+  const labelEvery = stats.buckets.length > 24 ? Math.ceil(stats.buckets.length / 12) : 1;
+
+  const bars = stats.buckets
+    .map((b, i) => {
+      const mcpH = Math.round((b.mcp / maxVal) * barHeight);
+      const monarchH = Math.round((b.monarch / maxVal) * barHeight);
+      const title = `${b.label} — MCP: ${b.mcp}, Monarch: ${b.monarch}`;
+      const showLabel = i % labelEvery === 0;
       return `<div class="bar-col" title="${title}">
   <div class="bar-stack">
     <div class="bar-seg bar-monarch" style="height:${monarchH}px"></div>
     <div class="bar-seg bar-mcp" style="height:${mcpH}px"></div>
   </div>
-  <span class="bar-label">${hour}</span>
+  <span class="bar-label">${showLabel ? b.label : ""}</span>
 </div>`;
     })
     .join("");
+
+  const timescaleButtons = TIMESCALES.map((t) => {
+    const params = new URLSearchParams({ token });
+    for (const [k, v] of Object.entries(currentQuery)) {
+      if (v && k !== "hours") params.set(k, v);
+    }
+    params.set("hours", String(t.hours));
+    const active = stats.hours === t.hours;
+    return `<a href="/dashboard?${params.toString()}" class="ts-btn${active ? " ts-active" : ""}">${t.label}</a>`;
+  }).join("");
 
   return `<div class="stats-panel">
   <div class="stats-counters">
     <div class="stat-card">
       <div class="stat-num">${stats.mcpRequests}</div>
-      <div class="stat-label">MCP Requests <span class="stat-period">24h</span></div>
+      <div class="stat-label">MCP Requests <span class="stat-period">${periodLabel}</span></div>
     </div>
     <div class="stat-card">
       <div class="stat-num ${stats.monarchRequests > 500 ? "stat-warn" : ""}">${stats.monarchRequests}</div>
-      <div class="stat-label">Monarch API Calls <span class="stat-period">24h</span></div>
+      <div class="stat-label">Monarch API Calls <span class="stat-period">${periodLabel}</span></div>
     </div>
     <div class="stat-card">
       <div class="stat-num ${stats.tokenRefreshes > 5 ? "stat-warn" : ""}">${stats.tokenRefreshes}</div>
-      <div class="stat-label">Token Refreshes <span class="stat-period">24h</span></div>
+      <div class="stat-label">Token Refreshes <span class="stat-period">${periodLabel}</span></div>
     </div>
     <div class="stat-card">
       <div class="stat-num">${stats.mcpRequests > 0 ? (stats.monarchRequests / stats.mcpRequests).toFixed(1) : "0"}</div>
@@ -100,9 +144,12 @@ function renderStats(stats: RequestStats): string {
     </div>
   </div>
   <div class="chart-container">
-    <div class="chart-legend">
-      <span><span class="legend-dot" style="background:#60a5fa"></span>MCP</span>
-      <span><span class="legend-dot" style="background:#f97316"></span>Monarch</span>
+    <div class="chart-header">
+      <div class="chart-legend">
+        <span><span class="legend-dot" style="background:#60a5fa"></span>MCP</span>
+        <span><span class="legend-dot" style="background:#f97316"></span>Monarch</span>
+      </div>
+      <div class="ts-buttons">${timescaleButtons}</div>
     </div>
     <div class="chart-bars">${bars}</div>
   </div>
@@ -116,6 +163,7 @@ export function renderDashboard(
   token: string,
   stats: RequestStats
 ): string {
+  _collapseId = 0; // reset for consistent IDs across live refreshes
   const currentType = query.type ?? "";
   const currentSeverity = query.severity ?? "";
   const currentMode = query.mode ?? "";
@@ -208,6 +256,12 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 .dt-bool { color: #60a5fa; }
 .dt-null { color: #555; font-style: italic; }
 .dt-code { background: #0d0d0d; border: 1px solid #222; border-radius: 4px; padding: 0.75rem; margin-top: 0.25rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #e2e8f0; white-space: pre; overflow-x: auto; line-height: 1.5; }
+.dt-collapse { margin-top: 0.25rem; }
+.dt-collapse-btn { background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 0.25rem 0.6rem; color: #888; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
+.dt-collapse-btn:hover { color: #e5e5e5; border-color: #555; }
+.dt-collapse-body { display: none; margin-top: 0.25rem; }
+.dt-collapse-body.open { display: block; }
+.dt-response { background: #0d0d0d; border: 1px solid #222; border-radius: 4px; padding: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; color: #a3a3a3; white-space: pre-wrap; word-break: break-all; max-height: 500px; overflow-y: auto; margin: 0; }
 .pagination { padding: 1rem 2rem; display: flex; gap: 0.5rem; justify-content: center; border-top: 1px solid #1a1a1a; }
 .pagination a { color: #888; text-decoration: none; padding: 0.4rem 0.8rem; border: 1px solid #333; border-radius: 4px; font-size: 0.8rem; }
 .pagination a:hover { color: #e5e5e5; border-color: #555; }
@@ -228,7 +282,12 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 .stat-label { font-size: 0.7rem; color: #666; margin-top: 0.25rem; }
 .stat-period { color: #444; }
 .chart-container { flex: 1; min-width: 0; }
-.chart-legend { font-size: 0.7rem; color: #666; margin-bottom: 0.25rem; display: flex; gap: 1rem; }
+.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+.chart-legend { font-size: 0.7rem; color: #666; display: flex; gap: 1rem; }
+.ts-buttons { display: flex; gap: 3px; }
+.ts-btn { padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.7rem; color: #666; text-decoration: none; border: 1px solid #222; }
+.ts-btn:hover { color: #e5e5e5; border-color: #444; }
+.ts-active { color: #e5e5e5; background: #222; border-color: #444; }
 .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
 .chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 50px; }
 .bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }
@@ -251,7 +310,7 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
   </div>
 </div>
 
-${renderStats(stats)}
+${renderStats(stats, token, query)}
 
 <div class="filters">
   <span style="color:#555;font-size:0.75rem">TYPE:</span>
@@ -276,6 +335,11 @@ ${renderStats(stats)}
       return `<a href="/dashboard?${filterParams({ severity: s, offset: "0" })}" class="${currentSeverity === s ? "active" : ""}" style="color:${c.text}">${s}</a>`;
     })
     .join("")}
+  <span class="sep">|</span>
+  <span style="color:#555;font-size:0.75rem">QUICK:</span>
+  <a href="/dashboard?${filterParams({ type: "auth", severity: "", offset: "0" })}" style="color:#60a5fa">MCP Requests</a>
+  <a href="/dashboard?${filterParams({ type: "graphql", severity: "", offset: "0" })}" style="color:#f97316">Monarch API</a>
+  <a href="/dashboard?${filterParams({ type: "token", severity: "", offset: "0" })}" style="color:#fbbf24">Token Events</a>
   ${currentRequestId ? `<span class="sep">|</span><a href="/dashboard?${filterParams({ requestId: "" })}">Clear request filter</a>` : ""}
 </div>
 

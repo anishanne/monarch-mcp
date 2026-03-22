@@ -257,6 +257,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
     type: (req.query.type as string) ?? "",
     severity: (req.query.severity as string) ?? "",
     mode: (req.query.mode as string) ?? "",
+    hours: (req.query.hours as string) ?? "24",
     limit: (req.query.limit as string) ?? "100",
     offset: (req.query.offset as string) ?? "0",
     requestId: (req.query.requestId as string) ?? "",
@@ -271,7 +272,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
       offset: parseInt(query.offset),
       requestId: query.requestId || undefined,
     }),
-    getRequestStats(),
+    getRequestStats(parseInt(query.hours) || 24),
   ]);
 
   res.setHeader("Content-Type", "text/html");
