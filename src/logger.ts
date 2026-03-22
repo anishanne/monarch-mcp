@@ -1,4 +1,5 @@
-import { MongoClient, type Collection, type Db } from "mongodb";
+import type { Collection } from "mongodb";
+import { getCollection } from "./db.js";
 
 export type LogType =
   | "auth"
@@ -24,10 +25,6 @@ export interface AuditLog {
   mode?: Mode;
 }
 
-let client: MongoClient | null = null;
-let db: Db | null = null;
-let collection: Collection<AuditLog> | null = null;
-
 // Per-request context
 let _requestId = "unknown";
 let _mode: Mode = "code";
@@ -48,31 +45,19 @@ export function getMode(): Mode {
   return _mode;
 }
 
-export async function connectDB(): Promise<void> {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) {
-    console.warn("MONGODB_URI not set — audit logging disabled");
-    return;
-  }
-  console.log("Connecting to MongoDB...");
-  try {
-    client = new MongoClient(uri);
-    await client.connect();
-    db = client.db("monarch_mcp");
-    collection = db.collection<AuditLog>("audit_logs");
-    // Create indexes in background — don't block startup
-    collection.createIndex({ timestamp: -1 }).catch(() => {});
-    collection.createIndex({ type: 1 }).catch(() => {});
-    collection.createIndex({ severity: 1 }).catch(() => {});
-    collection.createIndex({ requestId: 1 }).catch(() => {});
-    collection.createIndex({ mode: 1 }).catch(() => {});
-    console.log("MongoDB connected — audit logging enabled");
-  } catch (err: any) {
-    console.error("MongoDB connection failed:", err.message ?? err);
-    client = null;
-    db = null;
-    collection = null;
-  }
+function col(): Collection<AuditLog> | null {
+  return getCollection<AuditLog>("audit_logs");
+}
+
+export async function initLogger(): Promise<void> {
+  const collection = col();
+  if (!collection) return;
+  collection.createIndex({ timestamp: -1 }).catch(() => {});
+  collection.createIndex({ type: 1 }).catch(() => {});
+  collection.createIndex({ severity: 1 }).catch(() => {});
+  collection.createIndex({ requestId: 1 }).catch(() => {});
+  collection.createIndex({ mode: 1 }).catch(() => {});
+  console.log("Audit logging enabled");
 }
 
 const WRITE_METHODS =
@@ -94,7 +79,6 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): 
     mode: _mode,
   };
 
-  // Always console log
   const prefix =
     doc.severity === "critical"
       ? "🔴"
@@ -105,7 +89,7 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): 
           : "🟢";
   console.log(`${prefix} [${doc.type}] ${doc.summary}`);
 
-  // Fire-and-forget to MongoDB
+  const collection = col();
   if (collection) {
     collection.insertOne(doc).catch((err) => {
       console.error("Failed to write audit log:", err.message);
@@ -135,6 +119,7 @@ export interface RequestStats {
 }
 
 export async function getRequestStats(hours: number = 24): Promise<RequestStats> {
+  const collection = col();
   if (!collection)
     return { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hours, buckets: [] };
 
@@ -142,7 +127,6 @@ export async function getRequestStats(hours: number = 24): Promise<RequestStats>
   const since = new Date(now.getTime() - hours * 60 * 60 * 1000);
   const timeFilter = { $gte: since };
 
-  // Bucket size: <=6h → 15min, <=24h → 1h, <=72h → 3h, <=168h → 6h, else 24h
   let bucketMinutes: number;
   let dateFormat: string;
   if (hours <= 6) {
@@ -178,7 +162,6 @@ export async function getRequestStats(hours: number = 24): Promise<RequestStats>
         method: "login",
         timestamp: timeFilter,
       }),
-      // MCP requests by bucket
       collection
         .aggregate([
           {
@@ -196,7 +179,6 @@ export async function getRequestStats(hours: number = 24): Promise<RequestStats>
           },
         ])
         .toArray(),
-      // Monarch API calls by bucket
       collection
         .aggregate([
           {
@@ -212,19 +194,15 @@ export async function getRequestStats(hours: number = 24): Promise<RequestStats>
         .toArray(),
     ]);
 
-  // Build bucket map
   const bucketCount = Math.ceil((hours * 60) / bucketMinutes);
   const bucketMap = new Map<string, { mcp: number; monarch: number }>();
   for (let i = bucketCount - 1; i >= 0; i--) {
     const t = new Date(now.getTime() - i * bucketMinutes * 60 * 1000);
-    // Snap to bucket boundary
     if (bucketMinutes >= 1440) {
-      const key = t.toISOString().slice(0, 10);
-      bucketMap.set(key, { mcp: 0, monarch: 0 });
+      bucketMap.set(t.toISOString().slice(0, 10), { mcp: 0, monarch: 0 });
     } else {
-      const mins = t.getMinutes();
       const snapped = new Date(t);
-      snapped.setMinutes(Math.floor(mins / bucketMinutes) * bucketMinutes, 0, 0);
+      snapped.setMinutes(Math.floor(t.getMinutes() / bucketMinutes) * bucketMinutes, 0, 0);
       const key =
         bucketMinutes < 60
           ? snapped.toISOString().slice(0, 16)
@@ -242,16 +220,10 @@ export async function getRequestStats(hours: number = 24): Promise<RequestStats>
     if (entry) entry.monarch += row.count;
   }
 
-  // Format labels
-  const buckets = [...bucketMap.entries()].map(([key, counts]) => {
-    let label: string;
-    if (bucketMinutes >= 1440) {
-      label = key.slice(5); // MM-DD
-    } else {
-      label = key.slice(11, 16); // HH:MM
-    }
-    return { label, ...counts };
-  });
+  const buckets = [...bucketMap.entries()].map(([key, counts]) => ({
+    label: bucketMinutes >= 1440 ? key.slice(5) : key.slice(11, 16),
+    ...counts,
+  }));
 
   return { mcpRequests, monarchRequests, tokenRefreshes, hours, buckets };
 }
@@ -260,6 +232,7 @@ export async function getLogs(query: LogQuery): Promise<{
   logs: AuditLog[];
   total: number;
 }> {
+  const collection = col();
   if (!collection) return { logs: [], total: 0 };
 
   const filter: Record<string, any> = {};

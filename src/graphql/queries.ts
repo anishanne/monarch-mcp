@@ -1,3 +1,5 @@
+import { ACCOUNT_FIELDS, TRANSACTION_OVERVIEW_FIELDS } from "./fragments.js";
+
 export const GET_ACCOUNTS = `
 query GetAccounts {
   accounts {
@@ -10,66 +12,7 @@ query GetAccounts {
     __typename
   }
 }
-
-fragment AccountFields on Account {
-  id
-  displayName
-  syncDisabled
-  deactivatedAt
-  isHidden
-  isAsset
-  mask
-  createdAt
-  updatedAt
-  displayLastUpdatedAt
-  currentBalance
-  displayBalance
-  includeInNetWorth
-  hideFromList
-  hideTransactionsFromReports
-  includeBalanceInNetWorth
-  includeInGoalBalance
-  dataProvider
-  dataProviderAccountId
-  isManual
-  transactionsCount
-  holdingsCount
-  manualInvestmentsTrackingMethod
-  order
-  logoUrl
-  type {
-    name
-    display
-    __typename
-  }
-  subtype {
-    name
-    display
-    __typename
-  }
-  credential {
-    id
-    updateRequired
-    disconnectedFromDataProviderAt
-    dataProvider
-    institution {
-      id
-      plaidInstitutionId
-      name
-      status
-      __typename
-    }
-    __typename
-  }
-  institution {
-    id
-    name
-    primaryColor
-    url
-    __typename
-  }
-  __typename
-}
+${ACCOUNT_FIELDS}
 `;
 
 export const GET_ACCOUNT_TYPE_OPTIONS = `
@@ -228,66 +171,7 @@ query AccountDetails_getAccount($id: UUID!, $filters: TransactionFilterInput) {
   }
 }
 
-fragment AccountFields on Account {
-  id
-  displayName
-  syncDisabled
-  deactivatedAt
-  isHidden
-  isAsset
-  mask
-  createdAt
-  updatedAt
-  displayLastUpdatedAt
-  currentBalance
-  displayBalance
-  includeInNetWorth
-  hideFromList
-  hideTransactionsFromReports
-  includeBalanceInNetWorth
-  includeInGoalBalance
-  dataProvider
-  dataProviderAccountId
-  isManual
-  transactionsCount
-  holdingsCount
-  manualInvestmentsTrackingMethod
-  order
-  logoUrl
-  type {
-    name
-    display
-    group
-    __typename
-  }
-  subtype {
-    name
-    display
-    __typename
-  }
-  credential {
-    id
-    updateRequired
-    disconnectedFromDataProviderAt
-    dataProvider
-    institution {
-      id
-      plaidInstitutionId
-      name
-      status
-      __typename
-    }
-    __typename
-  }
-  institution {
-    id
-    name
-    primaryColor
-    url
-    __typename
-  }
-  __typename
-}
+${ACCOUNT_FIELDS}
 
 fragment EditAccountFormFields on Account {
   id
@@ -328,48 +212,7 @@ fragment InstitutionStatusFields on Institution {
   __typename
 }
 
-fragment TransactionOverviewFields on Transaction {
-  id
-  amount
-  pending
-  date
-  hideFromReports
-  plaidName
-  notes
-  isRecurring
-  reviewStatus
-  needsReview
-  dataProviderDescription
-  attachments {
-    id
-    __typename
-  }
-  isSplitTransaction
-  category {
-    id
-    name
-    group {
-      id
-      type
-      __typename
-    }
-    __typename
-  }
-  merchant {
-    name
-    id
-    transactionsCount
-    __typename
-  }
-  tags {
-    id
-    name
-    color
-    order
-    __typename
-  }
-  __typename
-}
+${TRANSACTION_OVERVIEW_FIELDS}
 `;
 
 export const GET_INSTITUTION_SETTINGS = `
@@ -666,55 +509,7 @@ query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilter
     __typename
   }
 }
-
-fragment TransactionOverviewFields on Transaction {
-  id
-  amount
-  pending
-  date
-  hideFromReports
-  plaidName
-  notes
-  isRecurring
-  reviewStatus
-  needsReview
-  attachments {
-    id
-    extension
-    filename
-    originalAssetUrl
-    publicId
-    sizeBytes
-    __typename
-  }
-  isSplitTransaction
-  createdAt
-  updatedAt
-  category {
-    id
-    name
-    __typename
-  }
-  merchant {
-    name
-    id
-    transactionsCount
-    __typename
-  }
-  account {
-    id
-    displayName
-    __typename
-  }
-  tags {
-    id
-    name
-    color
-    order
-    __typename
-  }
-  __typename
-}
+${TRANSACTION_OVERVIEW_FIELDS}
 `;
 
 export const GET_CATEGORIES = `

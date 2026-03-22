@@ -1,6 +1,7 @@
 import type { GraphQLClient } from "../graphql/client.js";
 import { DISABLED_METHODS } from "../config.js";
 import { log, getSeverity } from "../logger.js";
+import { requestDeletion } from "../deletion-requests.js";
 import { createAccountsSDK } from "./accounts.js";
 import { createTransactionsSDK } from "./transactions.js";
 import { createBudgetsSDK } from "./budgets.js";
@@ -19,6 +20,22 @@ function wrapWithLogging(
   for (const [category, methods] of Object.entries(api)) {
     for (const [method, fn] of Object.entries(methods)) {
       const fullName = `${category}.${method}`;
+
+      // Special case: transactions.delete routes to deletion request flow
+      if (fullName === "transactions.delete") {
+        methods[method] = async (id: string) => {
+          const result = await requestDeletion(id);
+          return {
+            deleteTransaction: {
+              deleted: false,
+              pendingApproval: true,
+              message: "Transaction hidden and deletion request submitted for admin approval.",
+              requestId: result._id?.toString(),
+            },
+          };
+        };
+        continue;
+      }
 
       if (DISABLED_METHODS.has(fullName)) {
         methods[method] = (...args: any[]) => {

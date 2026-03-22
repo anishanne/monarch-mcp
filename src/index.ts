@@ -8,8 +8,9 @@ import { createGraphQLClient } from "./graphql/client.js";
 import { createAPI } from "./sdk/index.js";
 import { createServer } from "./server.js";
 import { SimpleOAuthProvider } from "./auth.js";
+import { connectDB } from "./db.js";
 import {
-  connectDB,
+  initLogger,
   setRequestId,
   setMode,
   log,
@@ -19,6 +20,11 @@ import {
 import { initTokenManager } from "./token-manager.js";
 import { createRawServer } from "./raw-server.js";
 import { renderDashboard } from "./dashboard.js";
+import {
+  getPendingRequests,
+  approveRequest,
+  denyRequest,
+} from "./deletion-requests.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -34,8 +40,10 @@ if (!process.env.MONARCH_TOKEN && !process.env.MONARCH_EMAIL) {
   );
 }
 
-// Connect to MongoDB and load token
-const dbReady = connectDB().then(() => initTokenManager());
+// Connect to MongoDB, init logger indexes, load token
+const dbReady = connectDB().then(() =>
+  Promise.all([initLogger(), initTokenManager()])
+);
 
 const provider = new SimpleOAuthProvider(AUTH_TOKEN);
 
@@ -239,20 +247,6 @@ function requireDashboardAuth(
 app.get("/dashboard", requireDashboardAuth, async (req, res) => {
   await dbReady;
 
-  // log({
-  //   type: "auth",
-  //   severity: "info",
-  //   method: "dashboard",
-  //   summary: "Dashboard viewed",
-  //   details: {
-  //     filters: {
-  //       type: req.query.type || "all",
-  //       severity: req.query.severity || "all",
-  //       mode: req.query.mode || "all",
-  //     },
-  //   },
-  // });
-
   const query = {
     type: (req.query.type as string) ?? "",
     severity: (req.query.severity as string) ?? "",
@@ -263,7 +257,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
     requestId: (req.query.requestId as string) ?? "",
   };
 
-  const [{ logs, total }, stats] = await Promise.all([
+  const [{ logs, total }, stats, deletionRequests] = await Promise.all([
     getLogs({
       type: query.type || undefined,
       severity: query.severity || undefined,
@@ -273,10 +267,13 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
       requestId: query.requestId || undefined,
     }),
     getRequestStats(parseInt(query.hours) || 24),
+    getPendingRequests(),
   ]);
 
   res.setHeader("Content-Type", "text/html");
-  res.send(renderDashboard(logs, total, query, AUTH_TOKEN!, stats));
+  res.send(
+    renderDashboard(logs, total, query, AUTH_TOKEN!, stats, deletionRequests)
+  );
 });
 
 // Dashboard JSON API
@@ -294,6 +291,35 @@ app.get("/api/logs", requireDashboardAuth, async (req, res) => {
   });
   res.json(result);
 });
+
+// Deletion request API
+app.get("/api/deletion-requests", requireDashboardAuth, async (_req, res) => {
+  await dbReady;
+  const requests = await getPendingRequests();
+  res.json(requests);
+});
+
+app.post(
+  "/api/deletion-requests/:id/approve",
+  requireDashboardAuth,
+  express.json(),
+  async (req, res) => {
+    await dbReady;
+    const ok = await approveRequest(req.params.id as string);
+    res.json({ success: ok });
+  }
+);
+
+app.post(
+  "/api/deletion-requests/:id/deny",
+  requireDashboardAuth,
+  express.json(),
+  async (req, res) => {
+    await dbReady;
+    const ok = await denyRequest(req.params.id as string);
+    res.json({ success: ok });
+  }
+);
 
 // Health check
 app.get("/", (_req, res) => {

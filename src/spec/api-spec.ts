@@ -126,9 +126,9 @@ export const API_SPEC: MethodSpec[] = [
   {
     name: "api.transactions.delete",
     category: "transactions",
-    description: "Delete a transaction",
+    description: "Request transaction deletion (requires admin approval). Hides the transaction immediately and submits a deletion request.",
     parameters: "(id: string)",
-    returns: "{ deleteTransaction: { deleted: boolean } }",
+    returns: "{ deleteTransaction: { deleted: boolean, pendingApproval: boolean, message: string } }",
     example: 'const data = await api.transactions.delete("txn-uuid"); return data;',
   },
   {

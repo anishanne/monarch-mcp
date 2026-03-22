@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { MongoClient, type Collection } from "mongodb";
+import type { Collection } from "mongodb";
+import { getCollection } from "./db.js";
 import { log } from "./logger.js";
 
 const LOGIN_URL = "https://api.monarch.com/auth/login/";
@@ -10,61 +11,26 @@ interface TokenDoc {
   updatedAt: Date;
 }
 
-let tokenCollection: Collection<TokenDoc> | null = null;
 let cachedToken: string | null = null;
 
-export async function initTokenManager(): Promise<void> {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) return;
-
-  try {
-    const client = new MongoClient(uri);
-    await client.connect();
-    const db = client.db("monarch_mcp");
-    tokenCollection = db.collection<TokenDoc>("tokens");
-
-    // Load existing token from DB
-    const doc = await tokenCollection.findOne({ _id: "monarch_token" });
-    if (doc) {
-      cachedToken = doc.token;
-      console.log(
-        `Loaded Monarch token from DB (updated ${doc.updatedAt.toISOString()})`
-      );
-    }
-  } catch (err) {
-    console.error("Token manager DB init failed:", err);
-  }
+function col(): Collection<TokenDoc> | null {
+  return getCollection<TokenDoc>("tokens");
 }
 
-export async function getToken(): Promise<string> {
-  // 1. In-memory cache
-  if (cachedToken) return cachedToken;
-
-  // 2. DB
-  if (tokenCollection) {
-    const doc = await tokenCollection.findOne({ _id: "monarch_token" });
-    if (doc) {
-      cachedToken = doc.token;
-      return cachedToken;
-    }
+export async function initTokenManager(): Promise<void> {
+  const collection = col();
+  if (!collection) return;
+  const doc = await collection.findOne({ _id: "monarch_token" });
+  if (doc) {
+    cachedToken = doc.token;
+    console.log(
+      `Loaded Monarch token from DB (updated ${doc.updatedAt.toISOString()})`
+    );
   }
-
-  // 3. Env var fallback
-  const envToken = process.env.MONARCH_TOKEN;
-  if (envToken) {
-    cachedToken = envToken;
-    // Persist to DB if available
-    await saveToken(envToken);
-    return envToken;
-  }
-
-  throw new Error(
-    "No Monarch token available. Set MONARCH_TOKEN env var or configure MONARCH_EMAIL/MONARCH_PASSWORD for auto-login."
-  );
 }
 
 /**
- * Returns all unique token candidates to try before falling back to refreshToken().
+ * Returns all unique token candidates.
  * Order: in-memory cache, DB token, env var token (deduplicated).
  */
 export async function getAllTokenCandidates(): Promise<string[]> {
@@ -78,27 +44,35 @@ export async function getAllTokenCandidates(): Promise<string[]> {
     }
   };
 
-  // 1. In-memory cache (most recently known-good)
   add(cachedToken);
 
-  // 2. DB token (may differ from cache if updated externally)
-  if (tokenCollection) {
+  const collection = col();
+  if (collection) {
     try {
-      const doc = await tokenCollection.findOne({ _id: "monarch_token" });
+      const doc = await collection.findOne({ _id: "monarch_token" });
       add(doc?.token);
     } catch {}
   }
 
-  // 3. Env var (may be a different/older token)
   add(process.env.MONARCH_TOKEN);
 
   return tokens;
 }
 
+export async function getToken(): Promise<string> {
+  const candidates = await getAllTokenCandidates();
+  if (candidates.length > 0) return candidates[0];
+
+  throw new Error(
+    "No Monarch token available. Set MONARCH_TOKEN env var or configure MONARCH_EMAIL/MONARCH_PASSWORD for auto-login."
+  );
+}
+
 export async function saveToken(token: string): Promise<void> {
   cachedToken = token;
-  if (tokenCollection) {
-    await tokenCollection
+  const collection = col();
+  if (collection) {
+    await collection
       .updateOne(
         { _id: "monarch_token" },
         { $set: { token, updatedAt: new Date() } },
@@ -108,14 +82,21 @@ export async function saveToken(token: string): Promise<void> {
   }
 }
 
+export function clearCachedToken(): void {
+  cachedToken = null;
+}
+
 function generateTOTP(secret: string): string {
-  // Decode base32 secret
   const base32Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const cleanSecret = secret.replace(/[\s=-]/g, "").toUpperCase();
   let bits = "";
   for (const c of cleanSecret) {
     const val = base32Chars.indexOf(c);
-    if (val === -1) continue;
+    if (val === -1) {
+      throw new Error(
+        `Invalid character '${c}' in MONARCH_MFA_SECRET — must be a valid base32 string`
+      );
+    }
     bits += val.toString(2).padStart(5, "0");
   }
   const bytes = new Uint8Array(Math.floor(bits.length / 8));
@@ -123,7 +104,12 @@ function generateTOTP(secret: string): string {
     bytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
   }
 
-  // TOTP: HMAC-SHA1 of time counter
+  if (bytes.length < 10) {
+    throw new Error(
+      "Invalid MONARCH_MFA_SECRET — too short, must be a valid base32 TOTP secret"
+    );
+  }
+
   const counter = Math.floor(Date.now() / 1000 / 30);
   const counterBuf = Buffer.alloc(8);
   counterBuf.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
@@ -134,7 +120,6 @@ function generateTOTP(secret: string): string {
     .update(counterBuf)
     .digest();
 
-  // Dynamic truncation
   const offset = hmac[hmac.length - 1] & 0x0f;
   const code =
     ((hmac[offset] & 0x7f) << 24) |
@@ -243,8 +228,4 @@ export async function refreshToken(): Promise<string> {
   });
 
   return token;
-}
-
-export function clearCachedToken(): void {
-  cachedToken = null;
 }

@@ -1,14 +1,4 @@
-const PAYLOAD_ERROR_FIELDS = `
-fragment PayloadErrorFields on PayloadError {
-  fieldErrors {
-    field
-    messages
-    __typename
-  }
-  message
-  code
-  __typename
-}`;
+import { PAYLOAD_ERROR_FIELDS } from "./fragments.js";
 
 export const CREATE_MANUAL_ACCOUNT = `
 mutation Web_CreateManualAccount($input: CreateManualAccountMutationInput!) {

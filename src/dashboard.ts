@@ -1,4 +1,5 @@
 import type { AuditLog, RequestStats } from "./logger.js";
+import type { DeletionRequest } from "./deletion-requests.js";
 
 const SEVERITY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   info: { bg: "#052e16", text: "#22c55e", border: "#166534" },
@@ -22,7 +23,8 @@ function escapeHtml(str: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 let _collapseId = 0;
@@ -156,12 +158,69 @@ function renderStats(stats: RequestStats, token: string, currentQuery: Record<st
 </div>`;
 }
 
+function renderDeletionBanner(
+  requests: DeletionRequest[],
+  token: string
+): string {
+  if (requests.length === 0) return "";
+
+  const items = requests
+    .map((r) => {
+      const id = r._id?.toString() ?? "";
+      const snap = r.transactionSnapshot ?? {};
+      const merchant = snap.merchant?.name ?? "Unknown";
+      const amount =
+        snap.amount != null
+          ? `$${Math.abs(snap.amount).toFixed(2)}`
+          : "—";
+      const date = snap.date ?? "—";
+      const reason = r.reason
+        ? escapeHtml(r.reason)
+        : "No reason provided";
+      const requested = new Date(r.requestedAt).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+
+      return `<div class="del-item" id="del-${id}">
+  <div class="del-summary" onclick="document.getElementById('del-detail-${id}').classList.toggle('open')">
+    <span class="del-badge">DELETE REQUEST</span>
+    <span class="del-merchant">${escapeHtml(merchant)}</span>
+    <span class="del-amount">${amount}</span>
+    <span class="del-date">${date}</span>
+    <span class="del-time">requested ${requested}</span>
+  </div>
+  <div class="del-detail" id="del-detail-${id}">
+    <div class="del-reason"><strong>Reason:</strong> ${reason}</div>
+    <div class="del-snapshot"><strong>Transaction ID:</strong> <a href="https://app.monarchmoney.com/transactions?transactionId=${encodeURIComponent(snap.id ?? r.transactionId)}" target="_blank" class="del-link">${escapeHtml(snap.id ?? r.transactionId)}</a></div>
+    ${snap.category ? `<div class="del-snapshot"><strong>Category:</strong> ${escapeHtml(snap.category?.name ?? "—")}</div>` : ""}
+    ${snap.account ? `<div class="del-snapshot"><strong>Account:</strong> ${escapeHtml(snap.account?.displayName ?? "—")}</div>` : ""}
+    ${snap.notes ? `<div class="del-snapshot"><strong>Notes:</strong> ${escapeHtml(snap.notes)}</div>` : ""}
+    <div class="del-actions">
+      <button class="del-approve" onclick="handleDeletion('${id}', 'approve', '${token}')">Approve Deletion</button>
+      <button class="del-deny" onclick="handleDeletion('${id}', 'deny', '${token}')">Deny (Unhide)</button>
+    </div>
+  </div>
+</div>`;
+    })
+    .join("");
+
+  return `<div class="del-banner">
+  <div class="del-header">${requests.length} pending deletion request${requests.length > 1 ? "s" : ""}</div>
+  ${items}
+</div>`;
+}
+
 export function renderDashboard(
   logs: AuditLog[],
   total: number,
   query: Record<string, string>,
   token: string,
-  stats: RequestStats
+  stats: RequestStats,
+  deletionRequests: DeletionRequest[] = []
 ): string {
   _collapseId = 0; // reset for consistent IDs across live refreshes
   const currentType = query.type ?? "";
@@ -296,6 +355,27 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 .bar-mcp { background: #60a5fa; }
 .bar-monarch { background: #f97316; }
 .bar-label { font-size: 0.55rem; color: #444; margin-top: 2px; }
+.del-banner { background: #1a0a0a; border-bottom: 2px solid #991b1b; padding: 1rem 2rem; }
+.del-header { color: #ef4444; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.del-item { background: #111; border: 1px solid #333; border-radius: 6px; margin-bottom: 0.5rem; overflow: hidden; }
+.del-summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem; cursor: pointer; font-size: 0.8rem; }
+.del-summary:hover { background: #1a1a1a; }
+.del-badge { background: #450a0a; color: #ef4444; border: 1px solid #991b1b; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.65rem; font-weight: 700; white-space: nowrap; letter-spacing: 0.03em; }
+.del-merchant { color: #e5e5e5; font-weight: 500; }
+.del-amount { color: #fbbf24; }
+.del-date { color: #666; }
+.del-time { color: #444; margin-left: auto; font-size: 0.75rem; }
+.del-detail { display: none; padding: 0.75rem 1rem; border-top: 1px solid #222; background: #0d0d0d; }
+.del-detail.open { display: block; }
+.del-reason { color: #a3a3a3; font-size: 0.8rem; margin-bottom: 0.5rem; }
+.del-snapshot { color: #666; font-size: 0.75rem; margin-bottom: 0.25rem; }
+.del-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+.del-approve { background: #450a0a; color: #ef4444; border: 1px solid #991b1b; padding: 0.4rem 1rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.del-approve:hover { background: #991b1b; color: #fff; }
+.del-deny { background: #111; color: #888; border: 1px solid #333; padding: 0.4rem 1rem; border-radius: 4px; font-size: 0.8rem; cursor: pointer; font-family: inherit; }
+.del-deny:hover { color: #e5e5e5; border-color: #555; }
+.del-link { color: #60a5fa; text-decoration: none; }
+.del-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -309,6 +389,8 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
     </button>
   </div>
 </div>
+
+${renderDeletionBanner(deletionRequests, token)}
 
 ${renderStats(stats, token, query)}
 
@@ -445,6 +527,26 @@ async function doRefresh() {
       if (row) row.style.display = '';
     });
   } catch {}
+}
+
+async function handleDeletion(id, action, token) {
+  const label = action === 'approve' ? 'DELETE this transaction permanently' : 'deny deletion and unhide';
+  if (!confirm('Are you sure you want to ' + label + '?')) return;
+  try {
+    const res = await fetch('/api/deletion-requests/' + id + '/' + action + '?token=' + token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (data.success) {
+      const el = document.getElementById('del-' + id);
+      if (el) el.style.display = 'none';
+    } else {
+      alert('Action failed. Check logs.');
+    }
+  } catch {
+    alert('Request failed.');
+  }
 }
 
 // Start live on load

@@ -6,6 +6,6 @@
 export const DISABLED_METHODS: Set<string> = new Set([
   "accounts.update",
   "accounts.delete",
-  "transactions.delete",
   "categories.delete",
+  // transactions.delete is rerouted to deletion-request flow, not blocked
 ]);
