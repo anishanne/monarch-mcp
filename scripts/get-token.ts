@@ -1,7 +1,7 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
-const LOGIN_URL = "https://api.monarchmoney.com/auth/login/";
+const LOGIN_URL = "https://api.monarch.com/auth/login/";
 
 async function main() {
   const rl = readline.createInterface({ input: stdin, output: stdout });

@@ -1,4 +1,4 @@
-const GRAPHQL_ENDPOINT = "https://api.monarchmoney.com/graphql";
+const GRAPHQL_ENDPOINT = "https://api.monarch.com/graphql";
 
 export interface GraphQLClient {
   query<T = any>(query: string, variables?: Record<string, any>): Promise<T>;
