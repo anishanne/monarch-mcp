@@ -40,6 +40,7 @@ export function renderDashboard(
 ): string {
   const currentType = query.type ?? "";
   const currentSeverity = query.severity ?? "";
+  const currentMode = query.mode ?? "";
   const limit = parseInt(query.limit ?? "100");
   const offset = parseInt(query.offset ?? "0");
   const currentRequestId = query.requestId ?? "";
@@ -58,17 +59,20 @@ export function renderDashboard(
       });
       const duration = log.durationMs != null ? `${log.durationMs}ms` : "—";
       const hasDetails = log.details && Object.keys(log.details).length > 0;
+      const modeLabel = log.mode === "raw" ? "RAW" : "CODE";
+      const modeColor = log.mode === "raw" ? "color:#c084fc" : "color:#60a5fa";
 
       return `<tr class="log-row" ${hasDetails ? `onclick="toggleDetail(${i})" style="cursor:pointer"` : ""}>
   <td class="time">${time}</td>
   <td><span class="badge" style="background:${colors.bg};color:${colors.text};border:1px solid ${colors.border}">${escapeHtml(log.severity)}</span></td>
   <td><span class="type-badge">${escapeHtml(typeLabel)}</span></td>
+  <td><span class="type-badge" style="${modeColor}">${modeLabel}</span></td>
   <td class="method">${escapeHtml(log.method)}</td>
   <td class="summary">${escapeHtml(log.summary)}</td>
   <td class="duration">${duration}</td>
   <td class="req-id"><a href="/dashboard?token=${token}&requestId=${log.requestId}" class="rid">${log.requestId.slice(0, 8)}</a></td>
 </tr>
-${hasDetails ? `<tr class="detail-row" id="detail-${i}" style="display:none"><td colspan="7"><pre class="detail-pre">${formatDetails(log.details)}</pre></td></tr>` : ""}`;
+${hasDetails ? `<tr class="detail-row" id="detail-${i}" style="display:none"><td colspan="8"><pre class="detail-pre">${formatDetails(log.details)}</pre></td></tr>` : ""}`;
     })
     .join("\n");
 
@@ -79,7 +83,7 @@ ${hasDetails ? `<tr class="detail-row" id="detail-${i}" style="display:none"><td
 
   const filterParams = (overrides: Record<string, string>) => {
     const params = new URLSearchParams({ token });
-    const merged = { type: currentType, severity: currentSeverity, limit: String(limit), requestId: currentRequestId, ...overrides };
+    const merged = { type: currentType, severity: currentSeverity, mode: currentMode, limit: String(limit), requestId: currentRequestId, ...overrides };
     for (const [k, v] of Object.entries(merged)) {
       if (v) params.set(k, v);
     }
@@ -141,6 +145,11 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
     )
     .join("")}
   <span class="sep">|</span>
+  <span style="color:#555;font-size:0.75rem">MODE:</span>
+  <a href="/dashboard?${filterParams({ mode: "", offset: "0" })}" class="${!currentMode ? "active" : ""}">All</a>
+  <a href="/dashboard?${filterParams({ mode: "code", offset: "0" })}" class="${currentMode === "code" ? "active" : ""}" style="color:#60a5fa">Code</a>
+  <a href="/dashboard?${filterParams({ mode: "raw", offset: "0" })}" class="${currentMode === "raw" ? "active" : ""}" style="color:#c084fc">Raw</a>
+  <span class="sep">|</span>
   <span style="color:#555;font-size:0.75rem">SEVERITY:</span>
   <a href="/dashboard?${filterParams({ severity: "", offset: "0" })}" class="${!currentSeverity ? "active" : ""}">All</a>
   ${["info", "warning", "critical"]
@@ -158,6 +167,7 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
   <th>Time</th>
   <th>Severity</th>
   <th>Type</th>
+  <th>Mode</th>
   <th>Method</th>
   <th>Summary</th>
   <th style="text-align:right">Duration</th>
@@ -165,7 +175,7 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 </tr>
 </thead>
 <tbody>
-${rows || '<tr><td colspan="7" class="empty">No events found.</td></tr>'}
+${rows || '<tr><td colspan="8" class="empty">No events found.</td></tr>'}
 </tbody>
 </table>
 

@@ -9,6 +9,8 @@ export type LogType =
   | "disabled";
 export type Severity = "info" | "warning" | "critical";
 
+export type Mode = "code" | "raw";
+
 export interface AuditLog {
   timestamp: Date;
   type: LogType;
@@ -18,6 +20,7 @@ export interface AuditLog {
   details?: any;
   durationMs?: number;
   requestId: string;
+  mode?: Mode;
 }
 
 let client: MongoClient | null = null;
@@ -26,6 +29,7 @@ let collection: Collection<AuditLog> | null = null;
 
 // Per-request context
 let _requestId = "unknown";
+let _mode: Mode = "code";
 
 export function setRequestId(id: string) {
   _requestId = id;
@@ -33,6 +37,14 @@ export function setRequestId(id: string) {
 
 export function getRequestId(): string {
   return _requestId;
+}
+
+export function setMode(mode: Mode) {
+  _mode = mode;
+}
+
+export function getMode(): Mode {
+  return _mode;
 }
 
 export async function connectDB(): Promise<void> {
@@ -50,6 +62,7 @@ export async function connectDB(): Promise<void> {
     await collection.createIndex({ type: 1 });
     await collection.createIndex({ severity: 1 });
     await collection.createIndex({ requestId: 1 });
+    await collection.createIndex({ mode: 1 });
     console.log("MongoDB connected — audit logging enabled");
   } catch (err) {
     console.error("MongoDB connection failed:", err);
@@ -70,11 +83,12 @@ export function getSeverity(method: string, type?: LogType): Severity {
   return "info";
 }
 
-export function log(entry: Omit<AuditLog, "timestamp" | "requestId">): void {
+export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): void {
   const doc: AuditLog = {
     ...entry,
     timestamp: new Date(),
     requestId: _requestId,
+    mode: _mode,
   };
 
   // Always console log
@@ -88,13 +102,16 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId">): void {
 
   // Fire-and-forget to MongoDB
   if (collection) {
-    collection.insertOne(doc).catch(() => {});
+    collection.insertOne(doc).catch((err) => {
+      console.error("Failed to write audit log:", err.message);
+    });
   }
 }
 
 export interface LogQuery {
   type?: string;
   severity?: string;
+  mode?: string;
   limit?: number;
   offset?: number;
   startDate?: string;
@@ -111,6 +128,7 @@ export async function getLogs(query: LogQuery): Promise<{
   const filter: Record<string, any> = {};
   if (query.type) filter.type = query.type;
   if (query.severity) filter.severity = query.severity;
+  if (query.mode) filter.mode = query.mode;
   if (query.requestId) filter.requestId = query.requestId;
   if (query.startDate || query.endDate) {
     filter.timestamp = {};

@@ -8,25 +8,27 @@ import { createGraphQLClient } from "./graphql/client.js";
 import { createAPI } from "./sdk/index.js";
 import { createServer } from "./server.js";
 import { SimpleOAuthProvider } from "./auth.js";
-import { connectDB, setRequestId, log, getLogs } from "./logger.js";
+import { connectDB, setRequestId, setMode, log, getLogs } from "./logger.js";
+import { initTokenManager } from "./token-manager.js";
+import { createRawServer } from "./raw-server.js";
 import { renderDashboard } from "./dashboard.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
-const MONARCH_TOKEN = process.env.MONARCH_TOKEN;
 
 if (!AUTH_TOKEN) {
   console.error("Missing MCP_AUTH_TOKEN");
   process.exit(1);
 }
 
-if (!MONARCH_TOKEN) {
-  console.error("Missing MONARCH_TOKEN");
-  process.exit(1);
+if (!process.env.MONARCH_TOKEN && !process.env.MONARCH_EMAIL) {
+  console.warn(
+    "Neither MONARCH_TOKEN nor MONARCH_EMAIL is set — Monarch API calls will fail until configured."
+  );
 }
 
-// Connect to MongoDB (non-blocking)
-connectDB();
+// Connect to MongoDB and load token
+const dbReady = connectDB().then(() => initTokenManager());
 
 const provider = new SimpleOAuthProvider(AUTH_TOKEN);
 
@@ -113,22 +115,55 @@ app.post("/approve", express.json(), (req, res) => {
 const bearerAuth = requireBearerAuth({ verifier: provider });
 
 app.post("/mcp", bearerAuth, async (req, res) => {
+  await dbReady;
   const requestId = crypto.randomUUID();
   setRequestId(requestId);
+  setMode("code");
 
   log({
     type: "auth",
     severity: "info",
     method: "mcp",
-    summary: `MCP request authenticated (${requestId.slice(0, 8)})`,
+    summary: `MCP code-mode request authenticated (${requestId.slice(0, 8)})`,
   });
 
-  const client = createGraphQLClient(MONARCH_TOKEN!);
+  const client = createGraphQLClient();
   const api = createAPI(client);
   const mcpServer = createServer(api);
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
+  });
+
+  await mcpServer.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+
+  res.on("close", () => {
+    transport.close();
+    mcpServer.close();
+  });
+});
+
+// Raw MCP endpoint — individual tools per SDK method
+app.post("/mcp/raw", bearerAuth, async (req, res) => {
+  await dbReady;
+  const requestId = crypto.randomUUID();
+  setRequestId(requestId);
+  setMode("raw");
+
+  log({
+    type: "auth",
+    severity: "info",
+    method: "mcp/raw",
+    summary: `MCP raw-mode request authenticated (${requestId.slice(0, 8)})`,
+  });
+
+  const client = createGraphQLClient();
+  const api = createAPI(client);
+  const mcpServer = createRawServer(api);
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
   });
 
   await mcpServer.connect(transport);
@@ -163,6 +198,22 @@ app.delete("/mcp", bearerAuth, (_req, res) => {
   });
 });
 
+app.get("/mcp/raw", bearerAuth, (_req, res) => {
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed. Use POST for stateless mode." },
+    id: null,
+  });
+});
+
+app.delete("/mcp/raw", bearerAuth, (_req, res) => {
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed. Use POST for stateless mode." },
+    id: null,
+  });
+});
+
 // Dashboard token check middleware
 function requireDashboardAuth(
   req: express.Request,
@@ -182,6 +233,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
   const query = {
     type: (req.query.type as string) ?? "",
     severity: (req.query.severity as string) ?? "",
+    mode: (req.query.mode as string) ?? "",
     limit: (req.query.limit as string) ?? "100",
     offset: (req.query.offset as string) ?? "0",
     requestId: (req.query.requestId as string) ?? "",
@@ -190,6 +242,7 @@ app.get("/dashboard", requireDashboardAuth, async (req, res) => {
   const { logs, total } = await getLogs({
     type: query.type || undefined,
     severity: query.severity || undefined,
+    mode: query.mode || undefined,
     limit: parseInt(query.limit),
     offset: parseInt(query.offset),
     requestId: query.requestId || undefined,
@@ -204,6 +257,7 @@ app.get("/api/logs", requireDashboardAuth, async (req, res) => {
   const result = await getLogs({
     type: (req.query.type as string) || undefined,
     severity: (req.query.severity as string) || undefined,
+    mode: (req.query.mode as string) || undefined,
     limit: parseInt((req.query.limit as string) ?? "100"),
     offset: parseInt((req.query.offset as string) ?? "0"),
     startDate: (req.query.startDate as string) || undefined,
