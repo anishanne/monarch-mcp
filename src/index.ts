@@ -239,19 +239,19 @@ function requireDashboardAuth(
 app.get("/dashboard", requireDashboardAuth, async (req, res) => {
   await dbReady;
 
-  log({
-    type: "auth",
-    severity: "info",
-    method: "dashboard",
-    summary: "Dashboard viewed",
-    details: {
-      filters: {
-        type: req.query.type || "all",
-        severity: req.query.severity || "all",
-        mode: req.query.mode || "all",
-      },
-    },
-  });
+  // log({
+  //   type: "auth",
+  //   severity: "info",
+  //   method: "dashboard",
+  //   summary: "Dashboard viewed",
+  //   details: {
+  //     filters: {
+  //       type: req.query.type || "all",
+  //       severity: req.query.severity || "all",
+  //       mode: req.query.mode || "all",
+  //     },
+  //   },
+  // });
 
   const query = {
     type: (req.query.type as string) ?? "",
