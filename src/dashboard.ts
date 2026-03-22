@@ -195,7 +195,7 @@ function renderDeletionBanner(
   </div>
   <div class="del-detail" id="del-detail-${id}">
     <div class="del-reason"><strong>Reason:</strong> ${reason}</div>
-    <div class="del-snapshot"><strong>Transaction ID:</strong> <a href="https://app.monarchmoney.com/transactions?transactionId=${encodeURIComponent(snap.id ?? r.transactionId)}" target="_blank" class="del-link">${escapeHtml(snap.id ?? r.transactionId)}</a></div>
+    <div class="del-snapshot"><strong>Transaction:</strong> <a href="https://app.monarch.com/transactions/${encodeURIComponent(snap.id ?? r.transactionId)}" target="_blank" class="del-link">View on Monarch</a></div>
     ${snap.category ? `<div class="del-snapshot"><strong>Category:</strong> ${escapeHtml(snap.category?.name ?? "—")}</div>` : ""}
     ${snap.account ? `<div class="del-snapshot"><strong>Account:</strong> ${escapeHtml(snap.account?.displayName ?? "—")}</div>` : ""}
     ${snap.notes ? `<div class="del-snapshot"><strong>Notes:</strong> ${escapeHtml(snap.notes)}</div>` : ""}
