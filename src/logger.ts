@@ -1,5 +1,4 @@
-import type { Collection } from "mongodb";
-import { getCollection } from "./db.js";
+import { ensureCollection } from "./db.js";
 
 export type LogType =
   | "auth"
@@ -45,12 +44,8 @@ export function getMode(): Mode {
   return _mode;
 }
 
-function col(): Collection<AuditLog> | null {
-  return getCollection<AuditLog>("audit_logs");
-}
-
 export async function initLogger(): Promise<void> {
-  const collection = col();
+  const collection = await ensureCollection<AuditLog>("audit_logs");
   if (!collection) return;
   collection.createIndex({ timestamp: -1 }).catch(() => {});
   collection.createIndex({ type: 1 }).catch(() => {});
@@ -89,14 +84,14 @@ export function log(entry: Omit<AuditLog, "timestamp" | "requestId" | "mode">): 
           : "🟢";
   console.log(`${prefix} [${doc.type}] ${doc.summary}`);
 
-  const collection = col();
-  if (collection) {
-    collection.insertOne(doc).catch((err) => {
-      console.error("Failed to write audit log:", err.message);
-    });
-  } else {
-    console.warn("⚠️  Audit log skipped — MongoDB not connected");
-  }
+  // Fire-and-forget — lazy-connect if needed
+  ensureCollection<AuditLog>("audit_logs").then((collection) => {
+    if (collection) {
+      collection.insertOne(doc).catch((err) => {
+        console.error("Failed to write audit log:", err.message);
+      });
+    }
+  });
 }
 
 export interface LogQuery {
@@ -119,7 +114,7 @@ export interface RequestStats {
 }
 
 export async function getRequestStats(hours: number = 24): Promise<RequestStats> {
-  const collection = col();
+  const collection = await ensureCollection<AuditLog>("audit_logs");
   if (!collection)
     return { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hours, buckets: [] };
 
@@ -232,7 +227,7 @@ export async function getLogs(query: LogQuery): Promise<{
   logs: AuditLog[];
   total: number;
 }> {
-  const collection = col();
+  const collection = await ensureCollection<AuditLog>("audit_logs");
   if (!collection) return { logs: [], total: 0 };
 
   const filter: Record<string, any> = {};

@@ -1,5 +1,5 @@
-import { ObjectId, type Collection } from "mongodb";
-import { getCollection } from "./db.js";
+import { ObjectId } from "mongodb";
+import { ensureCollection } from "./db.js";
 import { log } from "./logger.js";
 import { createGraphQLClient } from "./graphql/client.js";
 import { DELETE_TRANSACTION } from "./graphql/mutations.js";
@@ -16,8 +16,8 @@ export interface DeletionRequest {
   resolvedAt?: Date;
 }
 
-function col(): Collection<DeletionRequest> | null {
-  return getCollection<DeletionRequest>("deletion_requests");
+async function col() {
+  return ensureCollection<DeletionRequest>("deletion_requests");
 }
 
 /**
@@ -69,7 +69,7 @@ export async function requestDeletion(
     requestedAt: new Date(),
   };
 
-  const collection = col();
+  const collection = await col();
   if (collection) {
     await collection.insertOne(request);
   }
@@ -92,7 +92,7 @@ export async function requestDeletion(
 }
 
 export async function getPendingRequests(): Promise<DeletionRequest[]> {
-  const collection = col();
+  const collection = await col();
   if (!collection) return [];
   return collection
     .find({ status: "pending" })
@@ -101,13 +101,13 @@ export async function getPendingRequests(): Promise<DeletionRequest[]> {
 }
 
 export async function getAllRequests(): Promise<DeletionRequest[]> {
-  const collection = col();
+  const collection = await col();
   if (!collection) return [];
   return collection.find().sort({ requestedAt: -1 }).limit(50).toArray();
 }
 
 export async function approveRequest(id: string): Promise<boolean> {
-  const collection = col();
+  const collection = await col();
   if (!collection) return false;
 
   const request = await collection.findOne({ _id: new ObjectId(id) });
@@ -151,7 +151,7 @@ export async function approveRequest(id: string): Promise<boolean> {
 }
 
 export async function denyRequest(id: string): Promise<boolean> {
-  const collection = col();
+  const collection = await col();
   if (!collection) return false;
 
   const request = await collection.findOne({ _id: new ObjectId(id) });

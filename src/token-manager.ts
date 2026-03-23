@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
-import type { Collection } from "mongodb";
-import { getCollection } from "./db.js";
+import { ensureCollection } from "./db.js";
 import { log } from "./logger.js";
 
 const LOGIN_URL = "https://api.monarch.com/auth/login/";
@@ -13,12 +12,12 @@ interface TokenDoc {
 
 let cachedToken: string | null = null;
 
-function col(): Collection<TokenDoc> | null {
-  return getCollection<TokenDoc>("tokens");
+async function col() {
+  return ensureCollection<TokenDoc>("tokens");
 }
 
 export async function initTokenManager(): Promise<void> {
-  const collection = col();
+  const collection = await col();
   if (!collection) return;
   const doc = await collection.findOne({ _id: "monarch_token" });
   if (doc) {
@@ -46,7 +45,7 @@ export async function getAllTokenCandidates(): Promise<string[]> {
 
   add(cachedToken);
 
-  const collection = col();
+  const collection = await col();
   if (collection) {
     try {
       const doc = await collection.findOne({ _id: "monarch_token" });
@@ -70,7 +69,7 @@ export async function getToken(): Promise<string> {
 
 export async function saveToken(token: string): Promise<void> {
   cachedToken = token;
-  const collection = col();
+  const collection = await col();
   if (collection) {
     await collection
       .updateOne(
