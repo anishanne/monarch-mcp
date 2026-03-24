@@ -92,29 +92,10 @@ const TIMESCALES = [
   { hours: 720, label: "30d" },
 ];
 
-function renderStats(stats: RequestStats, token: string, currentQuery: Record<string, string>): string {
-  const maxVal = Math.max(1, ...stats.buckets.map((b) => b.mcp + b.monarch));
-  const barHeight = 40;
-  const periodLabel = TIMESCALES.find((t) => t.hours === stats.hours)?.label ?? `${stats.hours}h`;
-
-  // Show every Nth label to avoid crowding
-  const labelEvery = stats.buckets.length > 24 ? Math.ceil(stats.buckets.length / 12) : 1;
-
-  const bars = stats.buckets
-    .map((b, i) => {
-      const mcpH = Math.round((b.mcp / maxVal) * barHeight);
-      const monarchH = Math.round((b.monarch / maxVal) * barHeight);
-      const title = `${b.label} — MCP: ${b.mcp}, Monarch: ${b.monarch}`;
-      const showLabel = i % labelEvery === 0;
-      return `<div class="bar-col" title="${title}">
-  <div class="bar-stack">
-    <div class="bar-seg bar-monarch" style="height:${monarchH}px"></div>
-    <div class="bar-seg bar-mcp" style="height:${mcpH}px"></div>
-  </div>
-  <span class="bar-label">${showLabel ? b.label : ""}</span>
-</div>`;
-    })
-    .join("");
+function renderStats(stats: RequestStats | undefined, token: string, currentQuery: Record<string, string>): string {
+  if (!stats) stats = { mcpRequests: 0, monarchRequests: 0, tokenRefreshes: 0, hours: 24, buckets: [] };
+  const buckets = stats.buckets ?? [];
+  const periodLabel = TIMESCALES.find((t) => t.hours === stats!.hours)?.label ?? `${stats.hours}h`;
 
   const timescaleButtons = TIMESCALES.map((t) => {
     const params = new URLSearchParams({ token });
@@ -125,6 +106,9 @@ function renderStats(stats: RequestStats, token: string, currentQuery: Record<st
     const active = stats.hours === t.hours;
     return `<a href="/dashboard?${params.toString()}" class="ts-btn${active ? " ts-active" : ""}">${t.label}</a>`;
   }).join("");
+
+  // Embed bucket data for JS interactivity
+  const chartData = JSON.stringify(buckets.map((b) => ({ l: b.label, m: b.mcp, o: b.monarch })));
 
   return `<div class="stats-panel">
   <div class="stats-counters">
@@ -153,7 +137,8 @@ function renderStats(stats: RequestStats, token: string, currentQuery: Record<st
       </div>
       <div class="ts-buttons">${timescaleButtons}</div>
     </div>
-    <div class="chart-bars">${bars}</div>
+    <canvas id="req-chart" height="80" style="width:100%;cursor:crosshair" data-chart='${chartData}'></canvas>
+    <div id="chart-tooltip" class="chart-tooltip"></div>
   </div>
 </div>`;
 }
@@ -348,13 +333,8 @@ td { padding: 0.5rem 1rem; border-bottom: 1px solid #111; vertical-align: top; }
 .ts-btn:hover { color: #e5e5e5; border-color: #444; }
 .ts-active { color: #e5e5e5; background: #222; border-color: #444; }
 .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
-.chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 50px; }
-.bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }
-.bar-stack { display: flex; flex-direction: column-reverse; }
-.bar-seg { width: 100%; min-height: 0; border-radius: 1px; }
-.bar-mcp { background: #60a5fa; }
-.bar-monarch { background: #f97316; }
-.bar-label { font-size: 0.55rem; color: #444; margin-top: 2px; }
+.chart-container { position: relative; }
+.chart-tooltip { display: none; position: absolute; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.75rem; color: #e5e5e5; pointer-events: none; z-index: 10; line-height: 1.5; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
 .del-banner { background: #1a0a0a; border-bottom: 2px solid #991b1b; padding: 1rem 2rem; }
 .del-header { color: #ef4444; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .del-item { background: #111; border: 1px solid #333; border-radius: 6px; margin-bottom: 0.5rem; overflow: hidden; }
@@ -459,6 +439,87 @@ function toggleDetail(i) {
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
+function initChart() {
+  const canvas = document.getElementById('req-chart');
+  if (!canvas) return;
+  const tip = document.getElementById('chart-tooltip');
+  let data;
+  try { data = JSON.parse(canvas.getAttribute('data-chart') || '[]'); } catch { data = []; }
+  if (!data.length) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  function draw(hoverIdx) {
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.scale(dpr, dpr);
+    const pad = { top: 4, bottom: 18, left: 0, right: 0 };
+    const cw = W - pad.left - pad.right;
+    const ch = H - pad.top - pad.bottom;
+    const n = data.length;
+    const barW = Math.max(2, (cw / n) - 1);
+    const gap = Math.max(1, (cw - barW * n) / (n - 1 || 1));
+    const maxVal = Math.max(1, ...data.map(d => d.m + d.o));
+
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i++) {
+      const y = pad.top + ch - (ch * i / 4);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    }
+
+    data.forEach((d, i) => {
+      const x = pad.left + i * (barW + gap);
+      const mcpH = (d.m / maxVal) * ch;
+      const monH = (d.o / maxVal) * ch;
+      const isHover = i === hoverIdx;
+      const alpha = hoverIdx >= 0 && !isHover ? 0.3 : 1;
+      if (isHover) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = barW + 6;
+        ctx.beginPath(); ctx.moveTo(x + barW/2, pad.top); ctx.lineTo(x + barW/2, pad.top + ch); ctx.stroke();
+      }
+      if (monH > 0) {
+        ctx.fillStyle = 'rgba(249,115,22,' + alpha + ')';
+        ctx.beginPath(); ctx.roundRect(x, pad.top + ch - monH, barW, monH, 2); ctx.fill();
+      }
+      if (mcpH > 0) {
+        ctx.fillStyle = 'rgba(96,165,250,' + alpha + ')';
+        ctx.beginPath(); ctx.roundRect(x, pad.top + ch - monH - mcpH, barW, mcpH, 2); ctx.fill();
+      }
+    });
+
+    ctx.fillStyle = '#555'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    const labelEvery = n > 12 ? Math.ceil(n / 8) : 1;
+    data.forEach((d, i) => {
+      if (i % labelEvery === 0) ctx.fillText(d.l, pad.left + i * (barW + gap) + barW / 2, H - 3);
+    });
+  }
+
+  draw(-1);
+
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const n = data.length;
+    const barW = Math.max(2, (rect.width / n) - 1);
+    const gap = Math.max(1, (rect.width - barW * n) / (n - 1 || 1));
+    const idx = Math.floor(mx / (barW + gap));
+    if (idx >= 0 && idx < n) {
+      const d = data[idx];
+      draw(idx);
+      tip.innerHTML = '<strong>' + d.l + '</strong><br><span style="color:#60a5fa">MCP: ' + d.m + '</span><br><span style="color:#f97316">Monarch: ' + d.o + '</span><br><span style="color:#666">Total: ' + (d.m + d.o) + '</span>';
+      tip.style.display = 'block';
+      tip.style.left = Math.min(e.clientX - rect.left + 12, rect.width - 120) + 'px';
+      tip.style.top = (e.clientY - rect.top - 60) + 'px';
+    }
+  };
+  canvas.onmouseleave = () => { draw(-1); tip.style.display = 'none'; };
+  window.onresize = () => draw(-1);
+}
+
+initChart();
+
 function toggleLive() {
   live = !live;
   const dot = document.getElementById('live-dot');
@@ -486,6 +547,10 @@ function stopRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
 }
 
+let chartHovered = false;
+document.addEventListener('mouseover', (e) => { if (e.target && e.target.closest && e.target.closest('.chart-container')) chartHovered = true; });
+document.addEventListener('mouseout', (e) => { if (e.target && e.target.closest && e.target.closest('.chart-container')) chartHovered = false; });
+
 async function doRefresh() {
   if (!live) return;
   try {
@@ -501,10 +566,29 @@ async function doRefresh() {
       if (row.style.display !== 'none') expanded.add(row.id);
     });
 
-    // Update stats
-    const newStats = doc.querySelector('.stats-panel');
-    const oldStats = document.querySelector('.stats-panel');
-    if (newStats && oldStats) oldStats.innerHTML = newStats.innerHTML;
+    // Update stats + chart (skip if hovering chart)
+    if (!chartHovered) {
+      const newStats = doc.querySelector('.stats-panel');
+      const oldStats = document.querySelector('.stats-panel');
+      if (newStats && oldStats) {
+        oldStats.innerHTML = newStats.innerHTML;
+        initChart();
+      }
+    } else {
+      // Still update the counters even if chart is hovered
+      const newCounters = doc.querySelector('.stats-counters');
+      const oldCounters = document.querySelector('.stats-counters');
+      if (newCounters && oldCounters) oldCounters.innerHTML = newCounters.innerHTML;
+    }
+
+    // Update deletion banner
+    const newDel = doc.querySelector('.del-banner');
+    const oldDel = document.querySelector('.del-banner');
+    if (newDel && oldDel) oldDel.innerHTML = newDel.innerHTML;
+    else if (newDel && !oldDel) {
+      const statsPanel = document.querySelector('.stats-panel');
+      if (statsPanel) statsPanel.insertAdjacentHTML('beforebegin', newDel.outerHTML);
+    } else if (!newDel && oldDel) oldDel.remove();
 
     // Update count
     const newCount = doc.querySelector('.count');

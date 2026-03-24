@@ -321,6 +321,14 @@ app.post(
   }
 );
 
+// Debug stats endpoint
+app.get("/api/stats", requireDashboardAuth, async (req, res) => {
+  await dbReady;
+  const hours = parseInt((req.query.hours as string) ?? "24") || 24;
+  const stats = await getRequestStats(hours);
+  res.json(stats);
+});
+
 // Health check
 app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "monarch-mcp", mcp: "/mcp" });

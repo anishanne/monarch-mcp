@@ -111,12 +111,24 @@ ${TYPE_DEFINITIONS}`,
       const result = await executeCode(code, api);
       const durationMs = Date.now() - start;
 
+      // Store result (truncate at 100KB for MongoDB)
+      let resultForLog: any;
+      try {
+        resultForLog = result.length > 100_000
+          ? { truncated: true, preview: result.slice(0, 2000) }
+          : JSON.parse(result);
+      } catch {
+        resultForLog = result.length > 100_000
+          ? { truncated: true, preview: result.slice(0, 2000) }
+          : result;
+      }
+
       log({
         type: "tool_call",
         severity: "info",
         method: "execute.complete",
         summary: `execute: completed (${durationMs}ms, ${result.length} chars output)`,
-        details: { outputSize: result.length },
+        details: { outputSize: result.length, result: resultForLog },
         durationMs,
       });
 
